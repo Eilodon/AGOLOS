@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 rusqlite = { version = "0.31", features = ["bundled"] }
 rand = "0.8"
-chacha20poly1305 = { version = "0.10", features = ["xchacha20"] }
+chacha20poly1305 = "0.9"
 aead = "0.5"
 thiserror = "1.0"
 serde = { version = "1.0", features = ["derive"] }
