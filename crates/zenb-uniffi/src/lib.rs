@@ -1,12 +1,12 @@
-use zenb_core::domain::{Envelope, Event, SessionId, ControlDecision, Observation};
-use zenb_core::{Engine, Estimate};
-use zenb_store::EventStore;
-use zenb_projectors::{Dashboard, StatsDaily};
 use serde_json::Value;
-use zenb_core::ZenbConfig;
-use thiserror::Error;
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
+use thiserror::Error;
+use zenb_core::domain::{ControlDecision, Envelope, Event, Observation, SessionId};
+use zenb_core::ZenbConfig;
+use zenb_core::{Engine, Estimate};
+use zenb_projectors::{Dashboard, StatsDaily};
+use zenb_store::EventStore;
 
 pub mod async_worker;
 use async_worker::AsyncWorker;
@@ -34,10 +34,10 @@ pub enum RuntimeError {
 pub enum ZenbError {
     #[error("JSON parse error: {0}")]
     JsonParseError(String),
-    
+
     #[error("Runtime error: {0}")]
     RuntimeError(String),
-    
+
     #[error("Invalid observation: {0}")]
     InvalidObservation(String),
 }
@@ -76,11 +76,15 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    pub fn new<P: AsRef<std::path::Path>>(db_path: P, master_key: [u8;32], session_id: SessionId) -> Result<Self, RuntimeError> {
+    pub fn new<P: AsRef<std::path::Path>>(
+        db_path: P,
+        master_key: [u8; 32],
+        session_id: SessionId,
+    ) -> Result<Self, RuntimeError> {
         let store = EventStore::open(db_path, master_key)?;
         // ensure session key exists
         store.create_session_key(&session_id)?;
-        
+
         // CRITICAL: Load active trauma from DB before starting async worker
         // This hydrates the trauma cache so safety constraints are active immediately
         let mut engine = Engine::new(6.0);
@@ -90,27 +94,33 @@ impl Runtime {
                 let core_hits: Vec<([u8; 32], zenb_core::safety_swarm::TraumaHit)> = trauma_hits
                     .into_iter()
                     .map(|(sig, hit)| {
-                        (sig, zenb_core::safety_swarm::TraumaHit {
-                            sev_eff: hit.sev_eff,
-                            count: hit.count,
-                            inhibit_until_ts_us: hit.inhibit_until_ts_us,
-                            last_ts_us: hit.last_ts_us,
-                        })
+                        (
+                            sig,
+                            zenb_core::safety_swarm::TraumaHit {
+                                sev_eff: hit.sev_eff,
+                                count: hit.count,
+                                inhibit_until_ts_us: hit.inhibit_until_ts_us,
+                                last_ts_us: hit.last_ts_us,
+                            },
+                        )
                     })
                     .collect();
-                
+
                 engine.sync_trauma(core_hits);
-                eprintln!("INFO: Loaded {} active trauma entries into cache", trauma_hits.len());
+                eprintln!(
+                    "INFO: Loaded {} active trauma entries into cache",
+                    trauma_hits.len()
+                );
             }
             Err(e) => {
                 // Log warning but don't crash - cache will be empty (cold start)
                 eprintln!("WARN: Failed to load trauma cache: {:?}", e);
             }
         }
-        
+
         // Start async worker AFTER trauma hydration
         let worker = AsyncWorker::start(store);
-        
+
         let mut rt = Runtime {
             worker,
             session_id: session_id.clone(),
@@ -129,7 +139,15 @@ impl Runtime {
         };
         // Persist SessionStarted immediately
         let ts = chrono::Utc::now().timestamp_micros();
-        let env = Envelope { session_id: session_id.clone(), seq: 1, ts_us: ts, event: Event::SessionStarted { mode: "gentle".into() }, meta: serde_json::json!({}) };
+        let env = Envelope {
+            session_id: session_id.clone(),
+            seq: 1,
+            ts_us: ts,
+            event: Event::SessionStarted {
+                mode: "gentle".into(),
+            },
+            meta: serde_json::json!({}),
+        };
         rt.push_buf(env);
         // flush to ensure session exists in DB
         let _ = rt.flush();
@@ -140,7 +158,10 @@ impl Runtime {
         let cfg: ZenbConfig = serde_json::from_str(&json_str)?;
         self.engine.update_config(cfg.clone());
 
-        let seq = match self.buf.back() { Some(e) => e.seq + 1, None => 1 };
+        let seq = match self.buf.back() {
+            Some(e) => e.seq + 1,
+            None => 1,
+        };
         let env = Envelope {
             session_id: self.session_id.clone(),
             seq,
@@ -158,7 +179,10 @@ impl Runtime {
         }
         self.session_active = false;
 
-        let seq = match self.buf.back() { Some(e) => e.seq + 1, None => 1 };
+        let seq = match self.buf.back() {
+            Some(e) => e.seq + 1,
+            None => 1,
+        };
         let env = Envelope {
             session_id: self.session_id.clone(),
             seq,
@@ -177,12 +201,20 @@ impl Runtime {
         let res_ema = self.engine.resonance_score_ema;
         let trigger = ended_early || user_cancel || fe_peak > fe_th || res_ema < res_th;
         if trigger {
-            let sev_fe = if fe_peak > fe_th { (fe_peak / fe_th).clamp(0.0, 5.0) } else { 0.0 };
-            let sev_res = if res_ema < res_th { ((res_th - res_ema) / res_th).clamp(0.0, 3.0) } else { 0.0 };
+            let sev_fe = if fe_peak > fe_th {
+                (fe_peak / fe_th).clamp(0.0, 5.0)
+            } else {
+                0.0
+            };
+            let sev_res = if res_ema < res_th {
+                ((res_th - res_ema) / res_th).clamp(0.0, 3.0)
+            } else {
+                0.0
+            };
             let sev = (sev_fe.max(sev_res)
                 + if user_cancel { 0.5 } else { 0.0 }
                 + if ended_early { 0.5 } else { 0.0 })
-                .clamp(0.0, 5.0);
+            .clamp(0.0, 5.0);
 
             let sig = zenb_core::safety_swarm::trauma_sig_hash(
                 self.engine.last_goal,
@@ -206,20 +238,54 @@ impl Runtime {
 
     /// Update runtime context for downstream decisions/pathways. Accepts primitives for FFI friendliness.
     pub fn update_context(&mut self, local_hour: u8, is_charging: bool, recent_sessions: u16) {
-        let new_ctx = zenb_core::belief::Context { local_hour, is_charging, recent_sessions };
-        if new_ctx == self.engine.context { return; }
+        let new_ctx = zenb_core::belief::Context {
+            local_hour,
+            is_charging,
+            recent_sessions,
+        };
+        if new_ctx == self.engine.context {
+            return;
+        }
         self.engine.update_context(new_ctx);
     }
 
     /// Ingest sensor features and update context atomically
-    pub fn ingest_sensor_with_context(&mut self, ts_us: i64, features: Vec<f32>, local_hour: u8, is_charging: bool, recent_sessions: u16) {
-        let ctx = zenb_core::belief::Context { local_hour, is_charging, recent_sessions };
-        let est = self.engine.ingest_sensor_with_context(&features, ts_us, ctx);
+    pub fn ingest_sensor_with_context(
+        &mut self,
+        ts_us: i64,
+        features: Vec<f32>,
+        local_hour: u8,
+        is_charging: bool,
+        recent_sessions: u16,
+    ) {
+        let ctx = zenb_core::belief::Context {
+            local_hour,
+            is_charging,
+            recent_sessions,
+        };
+        let est = self
+            .engine
+            .ingest_sensor_with_context(&features, ts_us, ctx);
         self.last_estimate = Some(est.clone());
         // downsample persist
-        if self.last_sensor_persist_ts_us.map_or(true, |t| (ts_us - t) >= SENSOR_DOWNSAMPLE_US) {
-            let seq = match self.buf.back() { Some(e) => e.seq + 1, None => 1 };
-            let env = Envelope { session_id: self.session_id.clone(), seq, ts_us, event: Event::SensorFeaturesIngested { features, downsampled: true }, meta: serde_json::json!({}) };
+        if self
+            .last_sensor_persist_ts_us
+            .map_or(true, |t| (ts_us - t) >= SENSOR_DOWNSAMPLE_US)
+        {
+            let seq = match self.buf.back() {
+                Some(e) => e.seq + 1,
+                None => 1,
+            };
+            let env = Envelope {
+                session_id: self.session_id.clone(),
+                seq,
+                ts_us,
+                event: Event::SensorFeaturesIngested {
+                    features,
+                    downsampled: true,
+                },
+                meta: serde_json::json!({}),
+            };
             self.push_buf(env);
             self.last_sensor_persist_ts_us = Some(ts_us);
         }
@@ -227,7 +293,7 @@ impl Runtime {
 
     /// Ingest a multi-dimensional Observation from JSON payload.
     /// This is the primary entry point for Android sensor fusion.
-    /// 
+    ///
     /// The Observation struct contains:
     /// - BioMetrics (HR, HRV, respiratory rate)
     /// - EnvironmentalContext (location, noise, charging)
@@ -238,46 +304,58 @@ impl Runtime {
     pub fn ingest_observation(&mut self, json_payload: &str) -> Result<(), RuntimeError> {
         // Parse the JSON into an Observation struct
         let obs: Observation = serde_json::from_str(json_payload)?;
-        
+
         // Extract timestamp
         let ts_us = obs.timestamp_us;
-        
+
         // Build feature vector from bio metrics
         // Feature order: [hr_bpm, hrv_rmssd, respiratory_rate, confidence_bio, confidence_env]
         let mut features = Vec::with_capacity(5);
-        
+
         // Extract bio metrics with defaults
-        let hr_bpm = obs.bio_metrics.as_ref()
+        let hr_bpm = obs
+            .bio_metrics
+            .as_ref()
             .and_then(|b| b.hr_bpm)
             .unwrap_or(60.0); // Default resting HR
-        let hrv_rmssd = obs.bio_metrics.as_ref()
+        let hrv_rmssd = obs
+            .bio_metrics
+            .as_ref()
             .and_then(|b| b.hrv_rmssd)
             .unwrap_or(30.0); // Default HRV
-        let respiratory_rate = obs.bio_metrics.as_ref()
+        let respiratory_rate = obs
+            .bio_metrics
+            .as_ref()
             .and_then(|b| b.respiratory_rate)
             .unwrap_or(12.0); // Default breathing rate
-        
+
         features.push(hr_bpm);
         features.push(hrv_rmssd);
         features.push(respiratory_rate);
-        
+
         // Confidence scores based on data availability
         let bio_confidence = if obs.bio_metrics.is_some() { 0.9 } else { 0.1 };
-        let env_confidence = if obs.environmental_context.is_some() { 0.8 } else { 0.2 };
-        
+        let env_confidence = if obs.environmental_context.is_some() {
+            0.8
+        } else {
+            0.2
+        };
+
         features.push(bio_confidence);
         features.push(env_confidence);
-        
+
         // Extract environmental context for Runtime context
         let local_hour = chrono::Utc::now().hour() as u8; // Could be extracted from device
-        let is_charging = obs.environmental_context.as_ref()
+        let is_charging = obs
+            .environmental_context
+            .as_ref()
             .map(|e| e.is_charging)
             .unwrap_or(false);
-        
+
         // Recent sessions would need to be tracked separately
         // For now, use a placeholder
         let recent_sessions = 0u16;
-        
+
         // Store digital context in metadata for future policy decisions
         let mut meta = serde_json::json!({});
         if let Some(ref digital) = obs.digital_context {
@@ -293,10 +371,10 @@ impl Runtime {
                 "noise_level": env.noise_level,
             });
         }
-        
+
         // Ingest through existing pipeline
         self.ingest_sensor_with_context(ts_us, features, local_hour, is_charging, recent_sessions);
-        
+
         Ok(())
     }
 
@@ -313,8 +391,19 @@ impl Runtime {
         let cycles = self.engine.tick(dt_us);
         if cycles > 0 {
             // persist low-frequency cycle completed event
-            let seq = match self.buf.back() { Some(e) => e.seq + 1, None => 1 };
-            let env = Envelope { session_id: self.session_id.clone(), seq, ts_us, event: Event::CycleCompleted { cycles: cycles as u32 }, meta: serde_json::json!({}) };
+            let seq = match self.buf.back() {
+                Some(e) => e.seq + 1,
+                None => 1,
+            };
+            let env = Envelope {
+                session_id: self.session_id.clone(),
+                seq,
+                ts_us,
+                event: Event::CycleCompleted {
+                    cycles: cycles as u32,
+                },
+                meta: serde_json::json!({}),
+            };
             self.push_buf(env);
             self.dash.apply(&env);
         }
@@ -323,13 +412,27 @@ impl Runtime {
         // Engine now uses internal trauma_cache (intrinsic safety - cannot be bypassed)
         if let Some(est) = &self.last_estimate {
             let (decision, changed, policy, deny_reason) = self.engine.make_control(est, ts_us);
-            let need_persist = if changed { true } else { 
+            let need_persist = if changed {
+                true
+            } else {
                 // also persist periodically (min interval)
-                self.last_decision_persist_ts_us.map_or(true, |t| (ts_us - t) >= DECISION_MIN_INTERVAL_US)
+                self.last_decision_persist_ts_us
+                    .map_or(true, |t| (ts_us - t) >= DECISION_MIN_INTERVAL_US)
             };
             if need_persist {
-                let seq = match self.buf.back() { Some(e) => e.seq + 1, None => 1 };
-                let env = Envelope { session_id: self.session_id.clone(), seq, ts_us, event: Event::ControlDecisionMade { decision: decision.clone() }, meta: serde_json::json!({}) };
+                let seq = match self.buf.back() {
+                    Some(e) => e.seq + 1,
+                    None => 1,
+                };
+                let env = Envelope {
+                    session_id: self.session_id.clone(),
+                    seq,
+                    ts_us,
+                    event: Event::ControlDecisionMade {
+                        decision: decision.clone(),
+                    },
+                    meta: serde_json::json!({}),
+                };
                 self.push_buf(env);
                 self.dash.apply(&env);
                 self.last_decision_persist_ts_us = Some(ts_us);
@@ -344,7 +447,14 @@ impl Runtime {
                     session_id: self.session_id.clone(),
                     seq,
                     ts_us,
-                    event: Event::BeliefUpdatedV2 { p: b.p, conf: b.conf, mode: b.mode as u8, free_energy_ema: fe, lr, resonance_score: res },
+                    event: Event::BeliefUpdatedV2 {
+                        p: b.p,
+                        conf: b.conf,
+                        mode: b.mode as u8,
+                        free_energy_ema: fe,
+                        lr,
+                        resonance_score: res,
+                    },
                     meta: serde_json::json!({}),
                 };
                 self.push_buf(env_b);
@@ -352,17 +462,41 @@ impl Runtime {
                 // Persist PolicyChosen if present
                 if let Some((mode, reason_bits, conf)) = policy {
                     let seq = seq + 1;
-                    let env_p = Envelope { session_id: self.session_id.clone(), seq, ts_us, event: Event::PolicyChosen { mode, reason_bits, conf }, meta: serde_json::json!({}) };
+                    let env_p = Envelope {
+                        session_id: self.session_id.clone(),
+                        seq,
+                        ts_us,
+                        event: Event::PolicyChosen {
+                            mode,
+                            reason_bits,
+                            conf,
+                        },
+                        meta: serde_json::json!({}),
+                    };
                     self.push_buf(env_p);
                 }
             }
 
             // If decision was denied, persist a denial event with downsampling to avoid spam
             if let Some(reason) = deny_reason {
-                let should_persist = self.last_deny_persist_ts_us.map_or(true, |t| (ts_us - t) >= DECISION_MIN_INTERVAL_US);
+                let should_persist = self
+                    .last_deny_persist_ts_us
+                    .map_or(true, |t| (ts_us - t) >= DECISION_MIN_INTERVAL_US);
                 if should_persist {
-                    let seq = match self.buf.back() { Some(e) => e.seq + 1, None => 1 };
-                    let env_d = Envelope { session_id: self.session_id.clone(), seq, ts_us, event: Event::ControlDecisionDenied { reason: reason.clone(), timestamp: ts_us }, meta: serde_json::json!({}) };
+                    let seq = match self.buf.back() {
+                        Some(e) => e.seq + 1,
+                        None => 1,
+                    };
+                    let env_d = Envelope {
+                        session_id: self.session_id.clone(),
+                        seq,
+                        ts_us,
+                        event: Event::ControlDecisionDenied {
+                            reason: reason.clone(),
+                            timestamp: ts_us,
+                        },
+                        meta: serde_json::json!({}),
+                    };
                     self.push_buf(env_d);
                     self.last_deny_persist_ts_us = Some(ts_us);
                 }
@@ -370,14 +504,19 @@ impl Runtime {
         }
 
         // flush check by elapsed
-        if self.last_flush_ts_us.map_or(true, |t| (ts_us - t) >= BATCH_ELAPSED_TRIGGER_US) {
+        if self
+            .last_flush_ts_us
+            .map_or(true, |t| (ts_us - t) >= BATCH_ELAPSED_TRIGGER_US)
+        {
             let _ = self.flush();
         }
     }
 
     fn push_buf(&mut self, env: Envelope) {
         // estimate bytes
-        if let Ok(bs) = serde_json::to_vec(&env) { self.buf_bytes += bs.len(); }
+        if let Ok(bs) = serde_json::to_vec(&env) {
+            self.buf_bytes += bs.len();
+        }
         self.dash.apply(&env);
         self.buf.push_back(env);
         // triggers
@@ -390,9 +529,11 @@ impl Runtime {
     /// Critical events are guaranteed to be delivered (blocking send).
     /// HighFreq events may be dropped under backpressure (with visibility).
     pub fn flush(&mut self) -> Result<(), RuntimeError> {
-        if self.buf.is_empty() { return Ok(()); }
+        if self.buf.is_empty() {
+            return Ok(());
+        }
         let v: Vec<_> = self.buf.drain(..).collect();
-        
+
         // PR2: Submit to async worker with priority-aware delivery
         // If batch contains Critical events, submit_append will block until delivered
         // If batch is HighFreq only, submit_append will drop on backpressure with metrics
@@ -402,7 +543,7 @@ impl Runtime {
             eprintln!("WARN: Async append failed (backpressure): {}", e);
             // Metrics tracked in AsyncWorker: highfreq_drops counter
         }
-        
+
         self.buf_bytes = 0;
         self.last_flush_ts_us = self.last_ts_us;
         Ok(())
@@ -420,42 +561,42 @@ impl Runtime {
 /// Thread-safe wrapper around Runtime for FFI exposure via UniFFI.
 /// This provides a safe interface for Kotlin/Swift to interact with the Rust core.
 pub struct ZenbCoreApi {
-    runtime: Arc<Mutex<Runtime>>,
+    runtime: Arc<RwLock<Runtime>>,
 }
 
 impl ZenbCoreApi {
     /// Create a new ZenbCoreApi instance.
-    /// 
+    ///
     /// # Arguments
     /// * `db_path` - Path to the SQLite database file
     /// * `master_key` - 32-byte master encryption key
     pub fn new(db_path: String, master_key: Vec<u8>) -> Result<Self, ZenbError> {
         if master_key.len() != 32 {
             return Err(ZenbError::RuntimeError(
-                "Master key must be exactly 32 bytes".to_string()
+                "Master key must be exactly 32 bytes".to_string(),
             ));
         }
-        
+
         let mut key_array = [0u8; 32];
         key_array.copy_from_slice(&master_key);
-        
+
         let session_id = SessionId::new();
         let runtime = Runtime::new(db_path, key_array, session_id)?;
-        
+
         Ok(Self {
-            runtime: Arc::new(Mutex::new(runtime)),
+            runtime: Arc::new(RwLock::new(runtime)),
         })
     }
-    
+
     /// Ingest a multi-dimensional observation from JSON.
     /// This is the primary entry point for Android sensor fusion.
-    /// 
+    ///
     /// # Thread Safety
     /// This method acquires a mutex lock and should be called from a background thread.
-    /// 
+    ///
     /// # Arguments
     /// * `json_payload` - JSON string matching the Observation struct schema
-    /// 
+    ///
     /// # Example JSON
     /// ```json
     /// {
@@ -478,13 +619,15 @@ impl ZenbCoreApi {
     /// }
     /// ```
     pub fn ingest_observation(&self, json_payload: String) -> Result<(), ZenbError> {
-        let mut rt = self.runtime.lock()
-            .map_err(|e| ZenbError::RuntimeError(format!("Mutex lock failed: {}", e)))?;
-        
+        let mut rt = self
+            .runtime
+            .write()
+            .map_err(|e| ZenbError::RuntimeError(format!("RwLock write lock failed: {}", e)))?;
+
         rt.ingest_observation(&json_payload)?;
         Ok(())
     }
-    
+
     /// Ingest sensor features with context (legacy API).
     /// Use ingest_observation for new code.
     pub fn ingest_sensor_with_context(
@@ -495,61 +638,67 @@ impl ZenbCoreApi {
         is_charging: bool,
         recent_sessions: u16,
     ) -> Result<(), ZenbError> {
-        let mut rt = self.runtime.lock()
-            .map_err(|e| ZenbError::RuntimeError(format!("Mutex lock failed: {}", e)))?;
-        
+        let mut rt = self
+            .runtime
+            .write()
+            .map_err(|e| ZenbError::RuntimeError(format!("RwLock write lock failed: {}", e)))?;
+
         rt.ingest_sensor_with_context(ts_us, features, local_hour, is_charging, recent_sessions);
         Ok(())
     }
-    
+
     /// Advance the engine time and process control decisions.
     pub fn tick(&self, ts_us: i64) {
-        if let Ok(mut rt) = self.runtime.lock() {
+        if let Ok(mut rt) = self.runtime.write() {
             rt.tick(ts_us);
         }
     }
-    
+
     /// Update configuration from JSON.
     pub fn update_config_json(&self, ts_us: i64, json_str: String) -> Result<(), ZenbError> {
-        let mut rt = self.runtime.lock()
-            .map_err(|e| ZenbError::RuntimeError(format!("Mutex lock failed: {}", e)))?;
-        
+        let mut rt = self
+            .runtime
+            .write()
+            .map_err(|e| ZenbError::RuntimeError(format!("RwLock write lock failed: {}", e)))?;
+
         rt.update_config_json(ts_us, json_str)?;
         Ok(())
     }
-    
+
     /// End the current session.
     pub fn end_session(&self, ts_us: i64, ended_early: bool, user_cancel: bool) {
-        if let Ok(mut rt) = self.runtime.lock() {
+        if let Ok(mut rt) = self.runtime.write() {
             rt.end_session(ts_us, ended_early, user_cancel);
         }
     }
-    
+
     /// Set the goal and pattern ID for the session.
     pub fn set_goal_and_pattern(&self, goal: i64, pattern_id: i64) {
-        if let Ok(mut rt) = self.runtime.lock() {
+        if let Ok(mut rt) = self.runtime.write() {
             rt.set_goal_and_pattern(goal, pattern_id);
         }
     }
-    
+
     /// Get the current dashboard state as JSON string.
     pub fn get_dashboard(&self) -> String {
-        if let Ok(rt) = self.runtime.lock() {
+        if let Ok(rt) = self.runtime.read() {
             rt.get_dashboard().to_string()
         } else {
             "{}".to_string()
         }
     }
-    
+
     /// Flush buffered events to persistent storage.
     pub fn flush(&self) -> Result<(), ZenbError> {
-        let mut rt = self.runtime.lock()
-            .map_err(|e| ZenbError::RuntimeError(format!("Mutex lock failed: {}", e)))?;
-        
+        let mut rt = self
+            .runtime
+            .write()
+            .map_err(|e| ZenbError::RuntimeError(format!("RwLock write lock failed: {}", e)))?;
+
         rt.flush()?;
         Ok(())
     }
-    
+
     /// Report action execution outcome from Android.
     /// This enables reinforcement learning by providing feedback on policy effectiveness.
     ///
@@ -567,30 +716,37 @@ impl ZenbCoreApi {
     /// }
     /// ```
     pub fn report_action_outcome(&self, outcome_json: String) -> Result<(), ZenbError> {
-        let mut rt = self.runtime.lock()
-            .map_err(|e| ZenbError::RuntimeError(format!("Mutex lock failed: {}", e)))?;
-        
+        let mut rt = self
+            .runtime
+            .write()
+            .map_err(|e| ZenbError::RuntimeError(format!("RwLock write lock failed: {}", e)))?;
+
         // Parse outcome JSON
         let outcome: serde_json::Value = serde_json::from_str(&outcome_json)?;
-        
+
         // Extract key fields
-        let action_id = outcome.get("action_id")
+        let action_id = outcome
+            .get("action_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ZenbError::InvalidObservation("Missing action_id".to_string()))?;
-        let success = outcome.get("success")
+        let success = outcome
+            .get("success")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let result_type = outcome.get("result_type")
+        let result_type = outcome
+            .get("result_type")
             .and_then(|v| v.as_str())
             .unwrap_or("Unknown");
-        let action_type = outcome.get("action_type")
+        let action_type = outcome
+            .get("action_type")
             .and_then(|v| v.as_str())
             .unwrap_or("UnknownAction");
-        
-        let ts_us = outcome.get("timestamp_us")
+
+        let ts_us = outcome
+            .get("timestamp_us")
             .and_then(|v| v.as_i64())
             .unwrap_or_else(|| chrono::Utc::now().timestamp_micros());
-        
+
         // Calculate severity for failures
         // Higher severity for user cancellations or explicit rejections
         let severity = if !success {
@@ -604,18 +760,17 @@ impl ZenbCoreApi {
         } else {
             0.0
         };
-        
+
         // CRITICAL: Learn from the outcome
         // This updates both TraumaRegistry and BeliefEngine
-        rt.engine.learn_from_outcome(
-            success,
-            action_type.to_string(),
-            ts_us,
-            severity,
-        );
-        
+        rt.engine
+            .learn_from_outcome(success, action_type.to_string(), ts_us, severity);
+
         // Persist the outcome event for audit trail
-        let seq = match rt.buf.back() { Some(e) => e.seq + 1, None => 1 };
+        let seq = match rt.buf.back() {
+            Some(e) => e.seq + 1,
+            None => 1,
+        };
         let env = Envelope {
             session_id: rt.session_id.clone(),
             seq,
@@ -631,9 +786,9 @@ impl ZenbCoreApi {
                 "outcome": outcome,
             }),
         };
-        
+
         rt.push_buf(env);
-        
+
         Ok(())
     }
 }
@@ -643,7 +798,9 @@ mod tests {
     use super::*;
     use tempfile::NamedTempFile;
 
-    fn mk_key() -> [u8;32] { [1u8;32] }
+    fn mk_key() -> [u8; 32] {
+        [1u8; 32]
+    }
 
     #[test]
     fn runtime_flow() {
@@ -684,8 +841,14 @@ mod tests {
         let tf = NamedTempFile::new().unwrap();
         let sid = SessionId::new();
         let mut rt = Runtime::new(tf.path(), mk_key(), sid.clone()).unwrap();
-        for i in 0..BATCH_LEN_TRIGGER+1 {
-            rt.ingest_sensor_with_context(1000 + i as i64 * 1000, vec![60.0, 30.0, 6.0], 12, false, 0);
+        for i in 0..BATCH_LEN_TRIGGER + 1 {
+            rt.ingest_sensor_with_context(
+                1000 + i as i64 * 1000,
+                vec![60.0, 30.0, 6.0],
+                12,
+                false,
+                0,
+            );
         }
         // flush triggered implicitly
         // Verify buffer was flushed (buffer should be empty after auto-flush)
