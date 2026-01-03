@@ -1,0 +1,35 @@
+# ZenB Development Configuration
+# Settings optimized for development and testing
+
+[fep]
+process_noise = 0.03        # Higher noise for testing edge cases
+base_obs_var = 0.3
+lr_base = 0.7               # Faster learning for development
+lr_min = 0.1
+lr_max = 0.9
+
+[resonance]
+window_size_sec = 10.0      # Shorter window for faster feedback
+coherence_threshold = 0.3   # Lower threshold for more detections
+
+[safety]
+trauma_hard_th = 2.0        # More permissive for testing
+trauma_soft_th = 0.8
+trauma_decay_default = 0.5  # Faster decay for testing
+
+[breath]
+default_target_bpm = 6.0
+
+[belief]
+pathway_weights = [1.0, 0.8, 1.2]  # Default weights
+prior_logits = [0.0, 0.0, 0.0, 0.0, 0.0]
+smooth_tau_sec = 3.0        # Less smoothing for faster response
+enter_threshold = 0.55      # Lower thresholds for testing
+exit_threshold = 0.45
+
+[performance]
+batch_size = 10             # Smaller batches for faster feedback
+flush_interval_ms = 50      # More frequent flushes for debugging
+max_buffer_size = 50
+enable_burst_filter = true
+burst_filter_threshold_us = 5000  # More sensitive burst filter

@@ -1,0 +1,35 @@
+# ZenB Production Configuration
+# Optimized settings for production deployment
+
+[fep]
+process_noise = 0.015       # Lower noise for more stable predictions
+base_obs_var = 0.2          # Tighter variance for production
+lr_base = 0.5               # More conservative learning rate
+lr_min = 0.05
+lr_max = 0.7
+
+[resonance]
+window_size_sec = 15.0      # Longer window for better accuracy
+coherence_threshold = 0.4   # Higher threshold for production
+
+[safety]
+trauma_hard_th = 1.2        # More conservative trauma threshold
+trauma_soft_th = 0.6
+trauma_decay_default = 0.8  # Slower decay in production
+
+[breath]
+default_target_bpm = 6.0
+
+[belief]
+pathway_weights = [1.0, 0.9, 1.1]  # Balanced weights for production
+prior_logits = [0.0, 0.0, 0.0, 0.0, 0.0]
+smooth_tau_sec = 5.0        # More smoothing in production
+enter_threshold = 0.65      # Higher threshold for mode changes
+exit_threshold = 0.35
+
+[performance]
+batch_size = 30             # Larger batches for efficiency
+flush_interval_ms = 100     # Less frequent flushes
+max_buffer_size = 150
+enable_burst_filter = true
+burst_filter_threshold_us = 10000

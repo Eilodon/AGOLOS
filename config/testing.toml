@@ -1,0 +1,35 @@
+# ZenB Testing Configuration
+# Minimal configuration for unit and integration tests
+
+[fep]
+process_noise = 0.02
+base_obs_var = 0.25
+lr_base = 0.6
+lr_min = 0.05
+lr_max = 0.8
+
+[resonance]
+window_size_sec = 5.0       # Short window for fast tests
+coherence_threshold = 0.35
+
+[safety]
+trauma_hard_th = 1.5
+trauma_soft_th = 0.7
+trauma_decay_default = 0.7
+
+[breath]
+default_target_bpm = 6.0
+
+[belief]
+pathway_weights = [1.0, 1.0, 1.0]  # Equal weights for testing
+prior_logits = [0.0, 0.0, 0.0, 0.0, 0.0]
+smooth_tau_sec = 1.0        # Minimal smoothing for deterministic tests
+enter_threshold = 0.6
+exit_threshold = 0.4
+
+[performance]
+batch_size = 5              # Small batches for test speed
+flush_interval_ms = 10      # Immediate flushing for tests
+max_buffer_size = 20
+enable_burst_filter = false # Disable for deterministic tests
+burst_filter_threshold_us = 10000

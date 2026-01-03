@@ -1,0 +1,37 @@
+namespace zenb {
+};
+
+[Error]
+enum ZenbError {
+    "JsonParseError",
+    "RuntimeError",
+    "InvalidObservation",
+};
+
+interface ZenbCoreApi {
+    [Throws=ZenbError]
+    constructor(string db_path, sequence<u8> master_key);
+    
+    [Throws=ZenbError]
+    void ingest_observation(string json_payload);
+    
+    [Throws=ZenbError]
+    void ingest_sensor_with_context(i64 ts_us, sequence<f32> features, u8 local_hour, boolean is_charging, u16 recent_sessions);
+    
+    void tick(i64 ts_us);
+    
+    [Throws=ZenbError]
+    void update_config_json(i64 ts_us, string json_str);
+    
+    void end_session(i64 ts_us, boolean ended_early, boolean user_cancel);
+    
+    void set_goal_and_pattern(i64 goal, i64 pattern_id);
+    
+    string get_dashboard();
+    
+    [Throws=ZenbError]
+    void flush();
+    
+    [Throws=ZenbError]
+    void report_action_outcome(string outcome_json);
+};

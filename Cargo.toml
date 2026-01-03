@@ -1,0 +1,14 @@
+[workspace]
+members = [
+    "crates/zenb-core",
+    "crates/zenb-store",
+    "crates/zenb-projectors",
+    "crates/zenb-uniffi",
+    "crates/zenb-wasm-demo",
+    "crates/zenb-cli",
+]
+
+[workspace.package]
+name = "zenb"
+version = "0.1.0"
+edition = "2021"

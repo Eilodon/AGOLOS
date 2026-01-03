@@ -1,0 +1,42 @@
+# ZenB Default Configuration
+# This file contains the default configuration values for the ZenB system.
+# Copy this file to create custom configurations for different environments.
+
+[fep]
+# Free Energy Principle parameters
+process_noise = 0.02        # Process noise for belief update (0-1)
+base_obs_var = 0.25         # Base observation variance
+lr_base = 0.6               # Base learning rate
+lr_min = 0.05               # Minimum learning rate
+lr_max = 0.8                # Maximum learning rate
+
+[resonance]
+# Resonance tracking parameters
+window_size_sec = 12.0      # Window size for resonance calculation (seconds)
+coherence_threshold = 0.35  # Coherence threshold for resonance detection (0-1)
+
+[safety]
+# Safety and trauma tracking parameters
+trauma_hard_th = 1.5        # Hard trauma threshold (blocks action)
+trauma_soft_th = 0.7        # Soft trauma threshold (warning)
+trauma_decay_default = 0.7  # Default trauma decay rate (0-1)
+
+[breath]
+# Breath guidance parameters
+default_target_bpm = 6.0    # Default target breathing rate (breaths per minute)
+
+[belief]
+# Belief engine parameters
+pathway_weights = [1.0, 0.8, 1.2]  # Weights for [Logical, Contextual, Biometric] pathways
+prior_logits = [0.0, 0.0, 0.0, 0.0, 0.0]  # Prior logits for belief states
+smooth_tau_sec = 4.0        # Smoothing time constant (seconds)
+enter_threshold = 0.6       # Hysteresis enter threshold (0-1)
+exit_threshold = 0.4        # Hysteresis exit threshold (0-1)
+
+[performance]
+# Performance tuning parameters
+batch_size = 20             # Number of events to batch before append
+flush_interval_ms = 80      # Flush interval in milliseconds
+max_buffer_size = 100       # Maximum buffer size before forced flush
+enable_burst_filter = true  # Enable burst filtering for sensor data
+burst_filter_threshold_us = 10000  # Burst filter threshold in microseconds (10ms)
