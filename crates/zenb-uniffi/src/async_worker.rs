@@ -91,7 +91,7 @@ pub struct AsyncWorker {
 
 impl AsyncWorker {
     /// Create and start async worker
-    pub fn start(store: EventStore) -> Self {
+    pub fn start(mut store: EventStore) -> Self {
         let (tx, rx) = bounded(CHANNEL_CAPACITY);
         let metrics = Arc::new(WorkerMetrics::default());
         let metrics_clone = Arc::clone(&metrics);
@@ -123,7 +123,7 @@ impl AsyncWorker {
             .any(|e| e.event.priority() == EventPriority::Critical);
 
         let cmd = WorkerCmd::Append {
-            session_id,
+            session_id: session_id.clone(),
             envelopes: envelopes.clone(),
         };
 
@@ -248,7 +248,7 @@ impl AsyncWorker {
     }
 
     /// Main worker loop - processes retry queue and channel
-    fn loop_forever(store: EventStore, rx: Receiver<WorkerCmd>, metrics: Arc<WorkerMetrics>) {
+    fn loop_forever(mut store: EventStore, rx: Receiver<WorkerCmd>, metrics: Arc<WorkerMetrics>) {
         let mut retry_queue: Vec<RetryEntry> = Vec::new();
 
         loop {
@@ -256,7 +256,7 @@ impl AsyncWorker {
             if !retry_queue.is_empty() {
                 let entry = retry_queue.remove(0);
 
-                match Self::try_append(&store, &entry.session_id, &entry.envelopes) {
+                match Self::try_append(&mut store, &entry.session_id, &entry.envelopes) {
                     Ok(_) => {
                         metrics.appends_success.fetch_add(1, Ordering::Relaxed);
                         // Success - continue to next
@@ -314,7 +314,7 @@ impl AsyncWorker {
                     session_id,
                     envelopes,
                 }) => {
-                    match Self::try_append(&store, &session_id, &envelopes) {
+                    match Self::try_append(&mut store, &session_id, &envelopes) {
                         Ok(_) => {
                             metrics.appends_success.fetch_add(1, Ordering::Relaxed);
                         }
@@ -339,11 +339,11 @@ impl AsyncWorker {
                     // Process all pending retries first
                     while !retry_queue.is_empty() {
                         let entry = retry_queue.remove(0);
-                        let _ = Self::try_append(&store, &entry.session_id, &entry.envelopes);
+                        let _ = Self::try_append(&mut store, &entry.session_id, &entry.envelopes);
                     }
 
                     // WAL checkpoint
-                    let result = Self::checkpoint_wal(&store);
+                    let result = Self::checkpoint_wal(&mut store);
                     let _ = response_tx.send(result);
                 }
 
@@ -351,7 +351,7 @@ impl AsyncWorker {
                     // Process remaining retries before shutdown
                     while !retry_queue.is_empty() {
                         let entry = retry_queue.remove(0);
-                        let _ = Self::try_append(&store, &entry.session_id, &entry.envelopes);
+                        let _ = Self::try_append(&mut store, &entry.session_id, &entry.envelopes);
                     }
                     break;
                 }
@@ -366,7 +366,7 @@ impl AsyncWorker {
 
     /// Attempt to append batch to store
     fn try_append(
-        store: &EventStore,
+        store: &mut EventStore,
         session_id: &SessionId,
         envelopes: &[Envelope],
     ) -> Result<(), StoreError> {
@@ -374,7 +374,7 @@ impl AsyncWorker {
     }
 
     /// WAL checkpoint for flush
-    fn checkpoint_wal(store: &EventStore) -> Result<(), StoreError> {
+    fn checkpoint_wal(store: &mut EventStore) -> Result<(), StoreError> {
         // SQLite WAL checkpoint - forces write to main DB file
         store.checkpoint_full()
     }
@@ -394,7 +394,7 @@ impl AsyncWorker {
 
         // Generate filename with timestamp
         let timestamp = chrono::Utc::now().timestamp_micros();
-        let session_hex = hex::encode(&session_id.0);
+        let session_hex = hex::encode(session_id.as_bytes());
         let filename = format!("dump_{}_{}.json", session_hex, timestamp);
         let filepath = dump_dir.join(filename);
 
@@ -460,6 +460,7 @@ mod tests {
                 decision: ControlDecision {
                     target_rate_bpm: 6.0,
                     confidence: 0.9,
+                    recommended_poll_interval_ms: 500,
                 },
             },
             meta: serde_json::json!({}),
@@ -534,7 +535,7 @@ mod tests {
         }
 
         // Should have some drops due to backpressure
-        assert!(dropped > 0 || worker.metrics().channel_full_drops.load(Ordering::Relaxed) > 0);
+        assert!(dropped > 0 || worker.metrics().channel_full_drops > 0);
 
         worker.shutdown();
     }

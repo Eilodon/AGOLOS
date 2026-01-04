@@ -3,7 +3,7 @@
 //! Handles schema version upgrades without data loss
 
 use crate::StoreError;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 const CURRENT_SCHEMA_VERSION: i32 = 2;
 

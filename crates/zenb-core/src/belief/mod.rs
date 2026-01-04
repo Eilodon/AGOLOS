@@ -55,7 +55,7 @@ impl Default for FepState {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct FepUpdateOut {
     pub belief: BeliefState,
     pub fep: FepState,

@@ -1,5 +1,3 @@
-use crate::domain::ControlDecision;
-
 /// Sensor estimate result
 #[derive(Debug, Clone, PartialEq)]
 pub struct Estimate {

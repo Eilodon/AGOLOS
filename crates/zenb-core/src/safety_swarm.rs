@@ -385,8 +385,8 @@ impl<'a> Guard for TraumaGuard<'a> {
 }
 
 /// Consensus decide function - deterministic
-pub fn decide(
-    guards: &[Box<dyn Guard>],
+pub fn decide<'a>(
+    guards: &[Box<dyn Guard + 'a>],
     patch: &PatternPatch,
     belief: &BeliefState,
     phys: &PhysioState,

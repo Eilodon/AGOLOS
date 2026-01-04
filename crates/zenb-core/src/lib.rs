@@ -47,12 +47,6 @@ pub use domain::{
     SocialState,
 };
 
-// Replay infrastructure
-pub use replay::{ReplayError, Replayer};
-
-// Policy types
-pub use policy::{PolicyConfig, PolicyMode};
-
 // Configuration
 pub use config::{
     BeliefConfig, BreathConfig, FepConfig, ResonanceConfig, SafetyConfig, ZenbConfig,
@@ -75,7 +69,7 @@ pub use trauma_cache::TraumaCache;
 pub use controller::{compute_poll_interval, AdaptiveController, ControllerConfig};
 
 // Phase machine
-pub use phase_machine::{BreathPhase, PhaseDurations, PhaseMachine, PhaseTransition};
+pub use phase_machine::{PhaseDurations, PhaseMachine};
 
 // Breath engine
 pub use breath_engine::{BreathEngine, BreathMode};
@@ -89,8 +83,8 @@ pub use belief::{
     Context,        // Contextual info (hour, charging, sessions)
     FepState,       // Free Energy Principle state
     FepUpdateOut,   // FEP update output
-    Pathway,        // Pathway trait
-    PathwayOut,     // Pathway output
+    CognitiveAgent, // Agent trait (was Pathway)
+    AgentVote,      // Agent vote output
     PhysioState,    // Physiological state
     SensorFeatures, // Sensor input
 };

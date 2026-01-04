@@ -217,7 +217,7 @@ impl ZenbConfig {
     }
 
     /// Apply environment variable overrides
-    fn apply_env_overrides(&mut self) -> Result<(), ConfigError> {
+    pub(crate) fn apply_env_overrides(&mut self) -> Result<(), ConfigError> {
         use std::env;
 
         // FEP overrides

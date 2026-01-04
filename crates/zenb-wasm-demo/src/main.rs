@@ -16,6 +16,7 @@ fn main() {
                 decision: ControlDecision {
                     target_rate_bpm: 6.0,
                     confidence: 0.9,
+                    recommended_poll_interval_ms: 1000,
                 },
             },
             meta: serde_json::json!({}),

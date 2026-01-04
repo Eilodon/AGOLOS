@@ -1,5 +1,4 @@
 use blake3::Hasher;
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
@@ -323,7 +322,11 @@ pub struct SessionId([u8; 16]);
 
 impl SessionId {
     pub fn new() -> Self {
-        SessionId(*Uuid::new_v4().as_bytes())
+        Self(Uuid::new_v4().into_bytes())
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
     }
 }
 
@@ -461,6 +464,11 @@ impl Envelope {
             Event::BeliefUpdatedV2 { .. } => 11,
             Event::ConfigUpdated { .. } => 12,
         }
+    }
+
+    /// Serialize meta field to bytes for storage.
+    pub fn meta_as_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
+        serde_json::to_vec(&self.meta)
     }
 }
 

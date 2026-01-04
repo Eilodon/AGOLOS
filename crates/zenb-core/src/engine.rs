@@ -4,8 +4,9 @@ use crate::config::ZenbConfig;
 use crate::controller::AdaptiveController;
 use crate::domain::ControlDecision;
 use crate::estimator::Estimator;
+use crate::estimator::Estimate;
 use crate::resonance::ResonanceTracker;
-use crate::safety_swarm::{TraumaRegistry, TraumaSource};
+use crate::safety_swarm::TraumaRegistry;
 use crate::trauma_cache::TraumaCache;
 
 /// High-level engine that holds estimator, safety envelope, controller and breath engine.
@@ -134,7 +135,7 @@ impl Engine {
 
     /// Advance engine time and compute any cycles (returns cycle count)
     pub fn tick(&mut self, dt_us: u64) -> u64 {
-        let (trans, cycles) = self.breath.tick(dt_us);
+        let (_trans, cycles) = self.breath.tick(dt_us);
 
         // Push current observation into causal buffer if available
         // Map canonical belief::BeliefState (5-mode) to CausalBeliefState (3-factor)
@@ -344,7 +345,7 @@ impl Engine {
         };
 
         // build guards
-        let mut guards: Vec<Box<dyn crate::safety_swarm::Guard>> = Vec::new();
+        let mut guards: Vec<Box<dyn crate::safety_swarm::Guard + '_>> = Vec::new();
         guards.push(Box::new(crate::safety_swarm::TraumaGuard {
             source: &self.trauma_cache,
             hard_th: self.config.safety.trauma_hard_th,
@@ -356,26 +357,24 @@ impl Engine {
             .last_decision_ts_us
             .map(|last| crate::domain::dt_sec(ts_us, last));
 
-        guards.extend(vec![
-            Box::new(crate::safety_swarm::ConfidenceGuard { min_conf: 0.2 }),
-            Box::new(crate::safety_swarm::BreathBoundsGuard {
-                clamp: crate::safety_swarm::Clamp {
-                    rr_min: 4.0,
-                    rr_max: 12.0,
-                    hold_max_sec: 60.0,
-                    max_delta_rr_per_min: 6.0,
-                },
-            }),
-            Box::new(crate::safety_swarm::RateLimitGuard {
-                min_interval_sec: 10.0,
-                last_patch_sec,
-            }),
-            Box::new(crate::safety_swarm::ComfortGuard),
-            Box::new(crate::safety_swarm::ResourceGuard),
-        ]);
+        guards.push(Box::new(crate::safety_swarm::ConfidenceGuard { min_conf: 0.2 }));
+        guards.push(Box::new(crate::safety_swarm::BreathBoundsGuard {
+            clamp: crate::safety_swarm::Clamp {
+                rr_min: 4.0,
+                rr_max: 12.0,
+                hold_max_sec: 60.0,
+                max_delta_rr_per_min: 6.0,
+            },
+        }));
+        guards.push(Box::new(crate::safety_swarm::RateLimitGuard {
+            min_interval_sec: 10.0,
+            last_patch_sec,
+        }));
+        guards.push(Box::new(crate::safety_swarm::ComfortGuard));
+        guards.push(Box::new(crate::safety_swarm::ResourceGuard));
 
         let decide = crate::safety_swarm::decide(
-            &guards,
+            guards.as_slice(),
             &patch,
             &self.belief_state,
             &crate::belief::PhysioState {

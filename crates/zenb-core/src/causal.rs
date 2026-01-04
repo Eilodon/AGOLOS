@@ -1,6 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-
 use crate::domain::{CausalBeliefState, Observation};
 
 /// Causal variable nodes representing observable and latent factors in the system.
@@ -319,7 +317,7 @@ impl CausalGraph {
     /// - Computes weighted sum of context variables -> UserAction edge weights
     /// - Normalizes to [0, 1] probability range
     /// - Returns 0.5 for cold start (no learned relationships)
-    pub fn predict_success_probability(&self, context_state: &[f32], action: &ActionPolicy) -> f32 {
+    pub fn predict_success_probability(&self, context_state: &[f32], _action: &ActionPolicy) -> f32 {
         // Cold start: return neutral probability to allow exploration
         let has_learned_weights = Variable::all()
             .iter()
@@ -390,7 +388,7 @@ impl CausalGraph {
     pub fn update_weights(
         &mut self,
         context_state: &[f32],
-        action: &ActionPolicy,
+        _action: &ActionPolicy,
         success: bool,
         learning_rate: f32,
     ) {

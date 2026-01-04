@@ -62,21 +62,7 @@ impl Dashboard {
     }
 }
 
-impl Default for Dashboard {
-    fn default() -> Self {
-        Self {
-            session_active: false,
-            last_decision: None,
-            last_deny_reason: None,
-            current_mode: None,
-            belief_conf: None,
-            belief_p: None,
-            free_energy_ema: None,
-            lr: None,
-            resonance_score: None,
-        }
-    }
-}
+// Derive already provides the needed default values for all fields.
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StatsDaily {

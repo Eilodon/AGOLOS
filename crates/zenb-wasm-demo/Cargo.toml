@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 zenb-core = { path = "../zenb-core" }
 serde_json = "1.0"
+hex = "0.4"

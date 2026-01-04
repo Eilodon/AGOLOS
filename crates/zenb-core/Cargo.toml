@@ -13,3 +13,6 @@ chrono = { version = "0.4", features = ["serde"] }
 config = "0.13"
 toml = "0.8"
 lru = "0.12"
+
+[dev-dependencies]
+tempfile = "3.10"

@@ -1,9 +1,8 @@
 //! Encrypted SQLite event store with session keys and batch append.
 
-use aead::{Aead, KeyInit, OsRng};
+use chacha20poly1305::aead::{Aead, Payload};
 use blake3::Hasher;
-use chacha20poly1305::XChaCha20Poly1305;
-use chacha20poly1305::XNonce;
+use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305, XNonce};
 use hkdf::Hkdf;
 use rand::RngCore;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -375,7 +374,7 @@ impl EventStore {
     }
 
     fn xchacha(&self, key: &[u8; 32]) -> XChaCha20Poly1305 {
-        XChaCha20Poly1305::new(key.into())
+        XChaCha20Poly1305::new(Key::from_slice(key))
     }
 
     /// Derive a wrapping key from the master key using HKDF-SHA256.
@@ -402,11 +401,11 @@ impl EventStore {
         let aead = self.wrapping_aead()?;
         let ciphertext = aead
             .encrypt(XNonce::from_slice(&nonce), &sk.0[..])
-            .map_err(|_| StoreError::CryptoError)?;
+            .map_err(|e| StoreError::CryptoError(format!("{:?}", e)))?;
         let ts = chrono::Utc::now().timestamp_micros();
         self.conn.execute(
             "INSERT OR REPLACE INTO session_keys (session_id, wrapped_key, wrap_nonce, created_ts_us, kdf_version) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![&session_id.0 as &[u8], ciphertext, &nonce as &[u8], ts, 1u32],
+            params![session_id.as_bytes() as &[u8], ciphertext, &nonce as &[u8], ts, 1u32],
         )?;
         Ok(())
     }
@@ -416,14 +415,14 @@ impl EventStore {
             .conn
             .query_row(
                 "SELECT wrapped_key, wrap_nonce FROM session_keys WHERE session_id = ?1",
-                params![&session_id.0 as &[u8]],
+                params![session_id.as_bytes() as &[u8]],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
         let (wrapped, nonce) = row.ok_or_else(|| {
             StoreError::NotFound(format!(
                 "session key not found for session {:?}",
-                session_id.0
+                session_id.as_bytes()
             ))
         })?;
         let aead = self.wrapping_aead()?;
@@ -446,9 +445,12 @@ impl EventStore {
     pub fn delete_session_keys(&self, session_id: &SessionId) -> Result<(), StoreError> {
         self.conn.execute(
             "DELETE FROM session_keys WHERE session_id = ?1",
-            params![&session_id.0 as &[u8]],
+            params![session_id.as_bytes() as &[u8]],
         )?;
-        // Note: event rows may be deleted afterwards; this is left to caller for secure-delete modes
+        self.conn.execute(
+            "DELETE FROM events WHERE session_id = ?1",
+            params![session_id.as_bytes() as &[u8]],
+        )?;
         Ok(())
     }
 
@@ -457,7 +459,7 @@ impl EventStore {
             .conn
             .query_row(
                 "SELECT MAX(seq) FROM events WHERE session_id = ?1",
-                params![&session_id.0 as &[u8]],
+                params![session_id.as_bytes() as &[u8]],
                 |r| r.get(0),
             )
             .optional()?;
@@ -465,7 +467,7 @@ impl EventStore {
     }
 
     pub fn append_batch(
-        &self,
+        &mut self,
         session_id: &SessionId,
         envelopes: &[Envelope],
     ) -> Result<(), StoreError> {
@@ -504,14 +506,14 @@ impl EventStore {
         let aead = self.xchacha(&sk.0);
 
         // Start IMMEDIATE transaction to lock database and prevent TOCTOU
-        let tx = self
+        let mut tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
         // Validate sequence against current DB state (inside transaction)
         let db_max_seq: u64 = tx.query_row(
             "SELECT COALESCE(MAX(seq), 0) FROM events WHERE session_id = ?1",
-            params![&session_id.0 as &[u8]],
+            params![session_id.as_bytes() as &[u8]],
             |r| r.get(0),
         )?;
 
@@ -524,76 +526,76 @@ impl EventStore {
             // Log before rollback
             let _ = tx.execute(
                 "INSERT INTO append_log (session_id, attempt_ts_us, seq_start, seq_end, event_count, success, error_msg) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6)",
-                params![&session_id.0 as &[u8], attempt_ts_us, seq_start as i64, seq_end as i64, event_count as i64, &err_msg]
+                params![session_id.as_bytes() as &[u8], attempt_ts_us, seq_start as i64, seq_end as i64, event_count as i64, &err_msg]
             );
-            drop(tx); // Explicit rollback
+            let _ = tx.rollback();
             return Err(StoreError::InvalidSequence {
                 expected: db_max_seq + 1,
                 got: seq_start,
-                session: hex::encode(&session_id.0),
+                session: hex::encode(session_id.as_bytes()),
             });
         }
 
         // Use INSERT OR IGNORE for idempotency (protects against duplicate seq)
-        let mut stmt = tx.prepare_cached(
-            "INSERT OR IGNORE INTO events (session_id, seq, ts_us, event_type, meta, payload, nonce) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
-        )?;
-
         let mut inserted = 0usize;
-        for env in envelopes {
-            // Encrypt the event payload
-            let payload_plain = serde_json::to_vec(&env.event).map_err(|e| {
-                StoreError::CryptoError(format!("event serialization failed: {}", e))
-            })?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR IGNORE INTO events (session_id, seq, ts_us, event_type, meta, payload, nonce) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+            )?;
 
-            // Build AAD
-            let meta_bytes = serde_json::to_vec(&env.meta).map_err(|e| {
-                StoreError::CryptoError(format!("meta serialization failed: {}", e))
-            })?;
-            let mut hasher = Hasher::new();
-            hasher.update(&meta_bytes);
-            let meta_hash = hasher.finalize();
+            for env in envelopes {
+                // Encrypt the event payload
+                let payload_plain = serde_json::to_vec(&env.event).map_err(|e| {
+                    StoreError::CryptoError(format!("event serialization failed: {}", e))
+                })?;
 
-            let mut aad = Vec::new();
-            aad.extend_from_slice(&env.session_id.0);
-            aad.extend_from_slice(&env.seq.to_le_bytes());
-            aad.extend_from_slice(&env.event_type_code().to_le_bytes());
-            aad.extend_from_slice(&env.ts_us.to_le_bytes());
-            aad.extend_from_slice(meta_hash.as_bytes());
+                // Build AAD
+                let meta_bytes = serde_json::to_vec(&env.meta).map_err(|e| {
+                    StoreError::CryptoError(format!("meta serialization failed: {}", e))
+                })?;
+                let mut hasher = Hasher::new();
+                hasher.update(&meta_bytes);
+                let meta_hash = hasher.finalize();
 
-            let mut nonce = [0u8; 24];
-            rand::thread_rng().fill_bytes(&mut nonce);
-            let ct = aead
-                .encrypt(
-                    XNonce::from_slice(&nonce),
-                    aead::Payload {
-                        msg: &payload_plain,
-                        aad: &aad,
-                    },
-                )
-                .map_err(|e| StoreError::CryptoError(format!("encryption failed: {:?}", e)))?;
+                let mut aad = Vec::new();
+                aad.extend_from_slice(env.session_id.as_bytes());
+                aad.extend_from_slice(&env.seq.to_le_bytes());
+                aad.extend_from_slice(&env.event_type_code().to_le_bytes());
+                aad.extend_from_slice(&env.ts_us.to_le_bytes());
+                aad.extend_from_slice(meta_hash.as_bytes());
 
-            let changes = stmt.execute(params![
-                &env.session_id.0 as &[u8],
-                env.seq as i64,
-                env.ts_us as i64,
-                env.event_type_code() as i64,
-                &meta_bytes,
-                ct,
-                &nonce as &[u8]
-            ])?;
-
-            inserted += changes;
+                let mut nonce = [0u8; 24];
+                rand::thread_rng().fill_bytes(&mut nonce);
+                let ct = aead
+                    .encrypt(
+                        XNonce::from_slice(&nonce),
+                        Payload {
+                            msg: &payload_plain,
+                            aad: &aad,
+                        },
+                    )
+                    .map_err(|e| StoreError::CryptoError(format!("encryption failed: {:?}", e)))?;
+                let changes = stmt.execute(params![
+                    env.session_id.as_bytes() as &[u8],
+                    env.seq as i64,
+                    env.ts_us as i64,
+                    env.event_type_code() as i64,
+                    env.meta_as_bytes()
+                        .map_err(|e| StoreError::CryptoError(format!("meta serialization failed: {}", e)))?,
+                    ct,
+                    nonce,
+                ])?;
+                inserted += changes;
+            }
         }
 
-        // Verify all events were inserted (detect race condition)
         if inserted != envelopes.len() {
             let err_msg = format!("only {} of {} events inserted", inserted, envelopes.len());
             let _ = tx.execute(
                 "INSERT INTO append_log (session_id, attempt_ts_us, seq_start, seq_end, event_count, success, error_msg) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6)",
-                params![&session_id.0 as &[u8], attempt_ts_us, seq_start as i64, seq_end as i64, event_count as i64, &err_msg]
+                params![session_id.as_bytes() as &[u8], attempt_ts_us, seq_start as i64, seq_end as i64, event_count as i64, &err_msg]
             );
-            drop(tx);
+            let _ = tx.rollback();
             return Err(StoreError::SequenceConflict {
                 inserted,
                 total: envelopes.len(),
@@ -603,7 +605,7 @@ impl EventStore {
         // Log successful append
         tx.execute(
             "INSERT INTO append_log (session_id, attempt_ts_us, seq_start, seq_end, event_count, success, error_msg) VALUES (?1, ?2, ?3, ?4, ?5, 1, NULL)",
-            params![&session_id.0 as &[u8], attempt_ts_us, seq_start as i64, seq_end as i64, event_count as i64]
+            params![session_id.as_bytes() as &[u8], attempt_ts_us, seq_start as i64, seq_end as i64, event_count as i64]
         )?;
 
         tx.commit()?;
@@ -622,7 +624,7 @@ impl EventStore {
     ) -> Result<(), StoreError> {
         self.conn.execute(
             "INSERT INTO append_log (session_id, attempt_ts_us, seq_start, seq_end, event_count, success, error_msg) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![&session_id.0 as &[u8], attempt_ts_us, seq_start as i64, seq_end as i64, event_count as i64, if success { 1 } else { 0 }, error_msg]
+            params![session_id.as_bytes() as &[u8], attempt_ts_us, seq_start as i64, seq_end as i64, event_count as i64, if success { 1 } else { 0 }, error_msg]
         )?;
         Ok(())
     }
@@ -631,7 +633,7 @@ impl EventStore {
         let sk = self.load_session_key(session_id)?;
         let aead = self.xchacha(&sk.0);
         let mut stmt = self.conn.prepare("SELECT seq, ts_us, event_type, meta, payload, nonce FROM events WHERE session_id = ?1 ORDER BY seq ASC")?;
-        let mut rows = stmt.query(params![&session_id.0 as &[u8]])?;
+        let mut rows = stmt.query(params![session_id.as_bytes() as &[u8]])?;
         let mut out = Vec::new();
         while let Some(r) = rows.next()? {
             let seq: i64 = r.get(0)?;
@@ -645,7 +647,7 @@ impl EventStore {
             hasher.update(&meta_bytes);
             let meta_hash = hasher.finalize();
             let mut aad = Vec::new();
-            aad.extend_from_slice(&session_id.0);
+            aad.extend_from_slice(session_id.as_bytes());
             aad.extend_from_slice(&(seq as u64).to_le_bytes());
             aad.extend_from_slice(&(_etype as u16).to_le_bytes());
             aad.extend_from_slice(&ts_us.to_le_bytes());
@@ -653,7 +655,7 @@ impl EventStore {
             let plain = aead
                 .decrypt(
                     XNonce::from_slice(&nonce),
-                    aead::Payload {
+                    Payload {
                         msg: &payload,
                         aad: &aad,
                     },
@@ -675,7 +677,7 @@ impl EventStore {
     }
 
     /// Perform full WAL checkpoint (for flush operations)
-    pub fn checkpoint_full(&self) -> Result<(), StoreError> {
+    pub fn checkpoint_full(&mut self) -> Result<(), StoreError> {
         // PRAGMA wal_checkpoint(FULL) forces all WAL data to main DB file
         self.conn.execute("PRAGMA wal_checkpoint(FULL)", [])?;
         Ok(())

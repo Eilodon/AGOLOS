@@ -1,3 +1,4 @@
+use zenb_core::belief;
 use zenb_core::breath_engine::{BreathEngine, BreathMode};
 use zenb_core::domain::BreathState;
 use zenb_core::engine::Engine;
@@ -14,7 +15,7 @@ fn long_session_fixed_to_dynamic_hash() {
     };
     let mut eng = Engine::new(6.0);
     eng.breath.set_fixed_pattern(d);
-    eng.update_context(crate::belief::Context {
+    eng.update_context(belief::Context {
         local_hour: 12,
         is_charging: true,
         recent_sessions: 0,
@@ -37,7 +38,7 @@ fn long_session_fixed_to_dynamic_hash() {
     for i in 0..(8 * 60) {
         if i == 10 {
             // simulate unplugging at 2m10s into dynamic phase
-            eng.update_context(crate::belief::Context {
+            eng.update_context(belief::Context {
                 local_hour: 12,
                 is_charging: false,
                 recent_sessions: 1,
@@ -80,7 +81,7 @@ fn long_session_fixed_to_dynamic_hash() {
         exhale_us: 8_000_000,
         hold_out_us: 0,
     });
-    eng2.update_context(crate::belief::Context {
+    eng2.update_context(belief::Context {
         local_hour: 12,
         is_charging: true,
         recent_sessions: 0,
@@ -94,7 +95,7 @@ fn long_session_fixed_to_dynamic_hash() {
     eng2.breath.set_target_bpm(6.0);
     for i in 0..(8 * 60) {
         if i == 10 {
-            eng2.update_context(crate::belief::Context {
+            eng2.update_context(belief::Context {
                 local_hour: 12,
                 is_charging: false,
                 recent_sessions: 1,

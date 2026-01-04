@@ -32,7 +32,7 @@ impl BreathEngine {
                     hold_out_us: holdout,
                 }
             }
-            BreathMode::Fixed(d) => d,
+            BreathMode::Fixed(ref d) => d.clone(),
         };
         Self {
             pm: PhaseMachine::new(durations),
@@ -81,7 +81,7 @@ impl BreathEngine {
 
     /// Switch to a Fixed, explicit pattern. This will be honored exactly by tick.
     pub fn set_fixed_pattern(&mut self, d: PhaseDurations) {
-        self.mode = BreathMode::Fixed(d);
+        self.mode = BreathMode::Fixed(d.clone());
         self.pm = PhaseMachine::new(d);
     }
 }
