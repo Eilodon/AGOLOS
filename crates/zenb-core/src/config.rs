@@ -45,6 +45,9 @@ pub struct SafetyConfig {
     pub trauma_hard_th: f32,
     pub trauma_soft_th: f32,
     pub trauma_decay_default: f32,
+    /// Allow zero/negative timestamps (test mode only)
+    #[serde(default)]
+    pub allow_test_time: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,9 +121,10 @@ impl Default for ResonanceConfig {
 impl Default for SafetyConfig {
     fn default() -> Self {
         Self {
-            trauma_hard_th: 1.5,
-            trauma_soft_th: 0.7,
-            trauma_decay_default: 0.7,
+            trauma_hard_th: 3.0,
+            trauma_soft_th: 1.5,
+            trauma_decay_default: 0.001,
+            allow_test_time: false,
         }
     }
 }

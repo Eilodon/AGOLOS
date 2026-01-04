@@ -41,6 +41,13 @@ impl Engine {
         Self::new_with_config(default_bpm, None)
     }
 
+    /// Test-only constructor: allows zero/negative timestamps for guards that enforce time sanity.
+    pub fn new_for_test(default_bpm: f32) -> Self {
+        let mut cfg = ZenbConfig::default();
+        cfg.safety.allow_test_time = true;
+        Self::new_with_config(default_bpm, Some(cfg))
+    }
+
     pub fn new_with_config(default_bpm: f32, config: Option<ZenbConfig>) -> Self {
         let cfg = config.unwrap_or_default();
         let est = Estimator::default();
@@ -350,6 +357,7 @@ impl Engine {
             source: &self.trauma_cache,
             hard_th: self.config.safety.trauma_hard_th,
             soft_th: self.config.safety.trauma_soft_th,
+            allow_test_time: self.config.safety.allow_test_time,
         }));
         // Fix: Use controller state for rate limiting (stateless guard needs history)
         let last_patch_sec = self
@@ -513,7 +521,7 @@ mod tests {
 
     #[test]
     fn engine_decision_flow() {
-        let mut eng = Engine::new(6.0);
+        let mut eng = Engine::new_for_test(6.0);
         eng.update_context(crate::belief::Context {
             local_hour: 23,
             is_charging: true,

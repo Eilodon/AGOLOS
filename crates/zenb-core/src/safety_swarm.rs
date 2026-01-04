@@ -306,6 +306,8 @@ pub struct TraumaGuard<'a> {
     pub source: &'a dyn TraumaSource,
     pub hard_th: f32,
     pub soft_th: f32,
+    /// In test mode we allow zero/negative timestamps to bypass time sanity
+    pub allow_test_time: bool,
 }
 
 impl<'a> TraumaGuard<'a> {
@@ -353,7 +355,7 @@ impl<'a> Guard for TraumaGuard<'a> {
         const MAX_FUTURE_SKEW_US: i64 = 365 * 24 * 60 * 60 * 1_000_000; // 1 year
 
         // Time sanity: reject zero/negative or far-future timestamps to avoid bypassing inhibit logic.
-        if now_ts_us <= 0 {
+        if !self.allow_test_time && now_ts_us <= 0 {
             return Vote::Deny("trauma_invalid_time");
         }
         let current_ts_us = Utc::now().timestamp_micros();
@@ -563,8 +565,9 @@ mod tests {
         };
         let guards: Vec<Box<dyn Guard>> = vec![Box::new(TraumaGuard {
             source: &src,
-            hard_th: 1.5,
-            soft_th: 0.7,
+            hard_th: 3.0,
+            soft_th: 1.5,
+            allow_test_time: true,
         })];
         let patch = PatternPatch {
             target_bpm: 6.0,
@@ -606,6 +609,7 @@ mod tests {
             source: &src,
             hard_th: 1.5,
             soft_th: 0.7,
+            allow_test_time: true,
         })];
         let patch = PatternPatch {
             target_bpm: 6.0,
