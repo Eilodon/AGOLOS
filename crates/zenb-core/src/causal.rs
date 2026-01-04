@@ -25,6 +25,12 @@ pub enum Variable {
     RespiratoryRate,
     /// Noise level (environmental stressor)
     NoiseLevel,
+    /// Cognitive load (semantic/task switching burden)
+    CognitiveLoad,
+    /// Emotional valence from voice/text (-1 to 1, normalized)
+    EmotionalValence,
+    /// Voice arousal (intensity/activation)
+    VoiceArousal,
 }
 
 impl Variable {
@@ -40,6 +46,9 @@ impl Variable {
             Variable::InteractionIntensity,
             Variable::RespiratoryRate,
             Variable::NoiseLevel,
+            Variable::CognitiveLoad,
+            Variable::EmotionalValence,
+            Variable::VoiceArousal,
         ]
     }
 
@@ -55,6 +64,9 @@ impl Variable {
             Variable::InteractionIntensity => 6,
             Variable::RespiratoryRate => 7,
             Variable::NoiseLevel => 8,
+            Variable::CognitiveLoad => 9,
+            Variable::EmotionalValence => 10,
+            Variable::VoiceArousal => 11,
         }
     }
 
@@ -70,12 +82,15 @@ impl Variable {
             6 => Some(Variable::InteractionIntensity),
             7 => Some(Variable::RespiratoryRate),
             8 => Some(Variable::NoiseLevel),
+            9 => Some(Variable::CognitiveLoad),
+            10 => Some(Variable::EmotionalValence),
+            11 => Some(Variable::VoiceArousal),
             _ => None,
         }
     }
 
     /// Total number of variables.
-    pub const COUNT: usize = 9;
+    pub const COUNT: usize = 12;
 }
 
 /// Directed Acyclic Graph (DAG) representing causal relationships.
@@ -151,6 +166,13 @@ impl CausalGraph {
             Variable::HeartRateVariability,
             0.4,
         );
+
+        // Cognitive priors
+        graph.set_effect(Variable::CognitiveLoad, Variable::NotificationPressure, 0.4);
+        // Positive valence lowers heart rate
+        graph.set_effect(Variable::EmotionalValence, Variable::HeartRate, -0.3);
+        // Higher arousal raises heart rate
+        graph.set_effect(Variable::VoiceArousal, Variable::HeartRate, 0.2);
 
         graph
     }
@@ -273,6 +295,9 @@ impl CausalGraph {
         values[Variable::RespiratoryRate.index()] = 0.5;
         values[Variable::NoiseLevel.index()] = 0.5;
         values[Variable::UserAction.index()] = 0.0;
+        values[Variable::CognitiveLoad.index()] = 0.5;
+        values[Variable::EmotionalValence.index()] = 0.5;
+        values[Variable::VoiceArousal.index()] = 0.5;
 
         values
     }
@@ -642,6 +667,26 @@ impl CausalBuffer {
             let hour = (snapshot.timestamp_us / 3_600_000_000) % 24;
             row[Variable::TimeOfDay.index()] = hour as f32 / 24.0;
 
+            if let Some(ref cognitive) = snapshot.observation.cognitive_context {
+                if let Some(load) = cognitive.cognitive_load {
+                    row[Variable::CognitiveLoad.index()] = load;
+                }
+                // Combine voice valence and screen text sentiment into emotional valence
+                let combined_valence = match (cognitive.voice_valence, cognitive.screen_text_sentiment)
+                {
+                    (Some(v1), Some(v2)) => Some((v1 + v2) / 2.0),
+                    (Some(v), None) | (None, Some(v)) => Some(v),
+                    _ => None,
+                };
+                if let Some(valence) = combined_valence {
+                    // Normalize from [-1, 1] to [0, 1] for matrix representation
+                    row[Variable::EmotionalValence.index()] = (valence + 1.0) / 2.0;
+                }
+                if let Some(arousal) = cognitive.voice_arousal {
+                    row[Variable::VoiceArousal.index()] = arousal;
+                }
+            }
+
             // Action
             if let Some(ref action) = snapshot.action {
                 row[Variable::UserAction.index()] = action.intensity;
@@ -713,6 +758,7 @@ mod tests {
             bio_metrics: None,
             environmental_context: None,
             digital_context: None,
+            cognitive_context: None,
         };
 
         buffer.push(ObservationSnapshot {
@@ -736,6 +782,7 @@ mod tests {
                 bio_metrics: None,
                 environmental_context: None,
                 digital_context: None,
+                cognitive_context: None,
             };
             buffer.push(ObservationSnapshot {
                 timestamp_us: i,

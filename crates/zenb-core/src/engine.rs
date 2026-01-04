@@ -163,6 +163,7 @@ impl Engine {
                     ],
                     confidence: self.belief_state.conf,
                     last_update_us: obs.timestamp_us,
+                    cognitive_context: obs.cognitive_context.clone(),
                 }),
             };
             self.causal_buffer.push(snapshot);
@@ -406,7 +407,8 @@ impl Engine {
                 // Denied by safety guards -> freeze and surface reason
                 let reason = s.to_string();
                 let poll_interval = crate::controller::compute_poll_interval(
-                    self.belief_state.mode,
+                    self.fep_state.free_energy_ema,
+                    self.belief_state.conf,
                     false,
                     &self.context,
                 );
@@ -433,7 +435,8 @@ impl Engine {
                     // Fallback to safe default: maintain last decision or use gentle baseline
                     let fallback_bpm = self.controller.last_decision_bpm.unwrap_or(6.0);
                     let poll_interval = crate::controller::compute_poll_interval(
-                        self.belief_state.mode,
+                        self.fep_state.free_energy_ema,
+                        self.belief_state.conf,
                         false,
                         &self.context,
                     );
@@ -476,7 +479,8 @@ impl Engine {
                 };
 
                 let poll_interval = crate::controller::compute_poll_interval(
-                    self.belief_state.mode,
+                    self.fep_state.free_energy_ema,
+                    self.belief_state.conf,
                     changed,
                     &self.context,
                 );

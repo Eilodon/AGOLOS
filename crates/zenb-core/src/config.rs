@@ -54,8 +54,9 @@ pub struct BreathConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BeliefConfig {
-    /// Pathway weights: [Logical, Contextual, Biometric]
-    pub pathway_weights: Vec<f32>,
+    /// Agent weights: [Gemini, MinhGioi, PhaQuan]
+    #[serde(alias = "pathway_weights")]
+    pub agent_weights: Vec<f32>,
     /// Prior logits for belief states
     pub prior_logits: [f32; 5],
     /// Smoothing time constant (seconds)
@@ -135,7 +136,7 @@ impl Default for BreathConfig {
 impl Default for BeliefConfig {
     fn default() -> Self {
         Self {
-            pathway_weights: vec![1.0, 0.8, 1.2],
+            agent_weights: vec![1.0, 0.8, 1.2],
             prior_logits: [0.0; 5],
             smooth_tau_sec: 4.0,
             enter_threshold: 0.6,
@@ -335,14 +336,14 @@ impl ZenbConfig {
         }
 
         // Belief validation
-        if self.belief.pathway_weights.len() != 3 {
+        if self.belief.agent_weights.len() != 3 {
             return Err(ConfigError::Validation(
-                "belief.pathway_weights must have exactly 3 elements".to_string(),
+                "belief.agent_weights must have exactly 3 elements".to_string(),
             ));
         }
-        if self.belief.pathway_weights.iter().any(|&w| w < 0.0) {
+        if self.belief.agent_weights.iter().any(|&w| w < 0.0) {
             return Err(ConfigError::Validation(
-                "belief.pathway_weights must be non-negative".to_string(),
+                "belief.agent_weights must be non-negative".to_string(),
             ));
         }
         if self.belief.smooth_tau_sec <= 0.0 {

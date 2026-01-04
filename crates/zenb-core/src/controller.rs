@@ -1,4 +1,4 @@
-use crate::belief::{BeliefBasis, Context};
+use crate::belief::Context;
 use crate::estimator::Estimate;
 
 #[derive(Debug, Clone)]
@@ -52,46 +52,43 @@ impl AdaptiveController {
     }
 }
 
-/// Compute adaptive polling interval based on belief state and context.
+/// Compute adaptive polling interval based on Free Energy (entropy) and confidence.
 ///
-/// # Logic:
-/// - Stress/Focus (High Energy) OR Action taken -> 1000ms (1s)
-/// - Calm (Stable) -> 5000ms (5s)
-/// - Sleepy (Low Energy) -> 30000ms (30s)
-/// - Energize -> 1000ms (1s) - high energy state
-/// - If charging -> Cap max at 5000ms (can afford more compute)
+/// Implements "Elastic Spacetime":
+/// - High Free Energy + low belief confidence => faster polling (time contracts)
+/// - Low Free Energy + high belief confidence => slower polling (time dilates)
 ///
 /// # Arguments
-/// * `belief_mode` - Current belief basis mode
+/// * `free_energy_ema` - Current free energy EMA (higher => higher entropy/urgency)
+/// * `belief_confidence` - Belief confidence in [0, 1]
 /// * `action_taken` - Whether a control action was just taken
 /// * `ctx` - Runtime context (charging state, etc.)
 ///
 /// # Returns
 /// Recommended polling interval in milliseconds
-pub fn compute_poll_interval(belief_mode: BeliefBasis, action_taken: bool, ctx: &Context) -> u64 {
-    const FAST_POLL_MS: u64 = 1000; // 1s - high energy or action taken
-    const NORMAL_POLL_MS: u64 = 5000; // 5s - calm/stable
-    const SLOW_POLL_MS: u64 = 30000; // 30s - sleepy/low energy
-    const CHARGING_MAX_MS: u64 = 5000; // Cap at 5s when charging
-
-    // If action was just taken, poll fast to monitor response
+pub fn compute_poll_interval(
+    free_energy_ema: f32,
+    belief_confidence: f32,
+    action_taken: bool,
+    ctx: &Context,
+) -> u64 {
+    // Immediate feedback loop if an action was taken
     if action_taken {
-        return FAST_POLL_MS;
+        return 200;
     }
 
-    // Determine base interval from belief state
-    let base_interval = match belief_mode {
-        BeliefBasis::Stress | BeliefBasis::Focus | BeliefBasis::Energize => FAST_POLL_MS,
-        BeliefBasis::Calm => NORMAL_POLL_MS,
-        BeliefBasis::Sleepy => SLOW_POLL_MS,
-    };
+    let base_interval_ms = 5000.0f32;
+    let urgency = free_energy_ema.max(0.0) * (1.0 - belief_confidence.clamp(0.0, 1.0));
+    let target_ms = base_interval_ms / (1.0 + urgency * 10.0);
+    let mut clamped_ms = target_ms.clamp(200.0, 30000.0);
 
-    // Cap at faster interval when charging (can afford more compute)
+    // Context modifier: if charging, we can afford more compute (poll faster)
     if ctx.is_charging {
-        base_interval.min(CHARGING_MAX_MS)
-    } else {
-        base_interval
+        clamped_ms *= 0.8;
     }
+
+    clamped_ms = clamped_ms.clamp(200.0, 30000.0);
+    clamped_ms.round() as u64
 }
 
 #[cfg(test)]

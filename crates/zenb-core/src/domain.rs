@@ -127,6 +127,19 @@ pub struct DigitalContext {
     pub notification_pressure: Option<f32>,
 }
 
+/// Cognitive context capturing semantic and vocal signals for Cognitive OS capabilities.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CognitiveContext {
+    /// Cognitive load normalized to [0.0, 1.0] (screen complexity / task switching).
+    pub cognitive_load: Option<f32>,
+    /// Voice valence in [-1.0, 1.0] (negative to positive affect).
+    pub voice_valence: Option<f32>,
+    /// Voice arousal in [0.0, 1.0] (intensity of voice).
+    pub voice_arousal: Option<f32>,
+    /// Screen text sentiment in [-1.0, 1.0].
+    pub screen_text_sentiment: Option<f32>,
+}
+
 /// Root observation structure representing the complete sensory input to the AI kernel.
 /// This is the "generative model's sensory layer" in Active Inference terminology.
 /// The system uses these observations to update beliefs about hidden states and select actions.
@@ -147,6 +160,10 @@ pub struct Observation {
     /// Digital context (app usage, interaction patterns, notifications).
     /// Optional but essential for digital wellbeing interventions.
     pub digital_context: Option<DigitalContext>,
+
+    /// Cognitive context (semantic load, voice sentiment, screen content).
+    /// Optional to preserve backward compatibility.
+    pub cognitive_context: Option<CognitiveContext>,
 }
 
 // ============================================================================
@@ -225,6 +242,9 @@ pub struct CausalBeliefState {
 
     /// Timestamp of last belief update in microseconds.
     pub last_update_us: i64,
+
+    /// Optional cognitive context extracted for causal mapping.
+    pub cognitive_context: Option<CognitiveContext>,
 }
 
 impl Default for CausalBeliefState {
@@ -236,6 +256,7 @@ impl Default for CausalBeliefState {
             social_state: [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0],
             confidence: 0.0,
             last_update_us: 0,
+            cognitive_context: None,
         }
     }
 }

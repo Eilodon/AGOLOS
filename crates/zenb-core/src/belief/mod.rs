@@ -89,10 +89,10 @@ pub struct PhysioState {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct PathwayOut {
+pub struct AgentVote {
     pub logits: [f32; 5],
-    pub conf: f32,
-    pub explain: u32,
+    pub confidence: f32,
+    pub reasoning: &'static str,
 }
 
 /// math helpers
@@ -166,19 +166,25 @@ pub fn hysteresis_collapse(
     }
 }
 
-/// Pathway trait
-pub trait Pathway: Send + Sync {
+/// Cognitive agent interface ("Digital Sangha")
+pub trait CognitiveAgent: Send + Sync {
     fn name(&self) -> &'static str;
-    fn eval(&self, x: &SensorFeatures, phys: &PhysioState, ctx: &Context) -> PathwayOut;
+    fn description(&self) -> &'static str;
+    fn eval(&self, x: &SensorFeatures, phys: &PhysioState, ctx: &Context) -> AgentVote;
 }
 
-/// A simple logical pathway based on hr/rr/rmssd trends (rule-based)
-pub struct LogicalPathway;
-impl Pathway for LogicalPathway {
+/// GeminiAgent (The Intellect)
+pub struct GeminiAgent;
+impl CognitiveAgent for GeminiAgent {
     fn name(&self) -> &'static str {
-        "Logical"
+        "Gemini"
     }
-    fn eval(&self, x: &SensorFeatures, phys: &PhysioState, _ctx: &Context) -> PathwayOut {
+
+    fn description(&self) -> &'static str {
+        "Analyzes raw physiological data logic (HR/RMSSD)."
+    }
+
+    fn eval(&self, x: &SensorFeatures, phys: &PhysioState, _ctx: &Context) -> AgentVote {
         // heuristics: high rmssd -> calm, low rmssd -> stress; rr high -> sleepy, motion -> energize
         let mut logits = [0.0f32; 5];
         let rm = phys.rmssd.unwrap_or(20.0);
@@ -198,21 +204,26 @@ impl Pathway for LogicalPathway {
         if phys.hr_bpm.unwrap_or(60.0) > 100.0 {
             logits[1] += 1.0;
         }
-        PathwayOut {
+        AgentVote {
             logits,
-            conf: phys.confidence.clamp(0.0, 1.0),
-            explain: 0,
+            confidence: phys.confidence.clamp(0.0, 1.0),
+            reasoning: "HR/RMSSD/respiration heuristics",
         }
     }
 }
 
-/// Contextual pathway based on time of day and recent session history
-pub struct ContextualPathway;
-impl Pathway for ContextualPathway {
+/// MinhGioiAgent (The Protector/Context)
+pub struct MinhGioiAgent;
+impl CognitiveAgent for MinhGioiAgent {
     fn name(&self) -> &'static str {
-        "Contextual"
+        "MinhGioi"
     }
-    fn eval(&self, _x: &SensorFeatures, _phys: &PhysioState, ctx: &Context) -> PathwayOut {
+
+    fn description(&self) -> &'static str {
+        "Monitors environmental and temporal constraints."
+    }
+
+    fn eval(&self, _x: &SensorFeatures, _phys: &PhysioState, ctx: &Context) -> AgentVote {
         let mut logits = [0.0f32; 5];
         if ctx.local_hour >= 22 || ctx.local_hour <= 6 {
             logits[3] += 2.0;
@@ -220,41 +231,46 @@ impl Pathway for ContextualPathway {
         if ctx.recent_sessions > 3 {
             logits[2] += 1.0;
         }
-        PathwayOut {
+        AgentVote {
             logits,
-            conf: 0.7,
-            explain: 0,
+            confidence: 0.7,
+            reasoning: "Time-of-day and session cadence heuristics",
         }
     }
 }
 
-/// Biometric pathway sensitive to quality and motion
-pub struct BiometricPathway;
-impl Pathway for BiometricPathway {
+/// PhaQuanAgent (The Body/Sensation)
+pub struct PhaQuanAgent;
+impl CognitiveAgent for PhaQuanAgent {
     fn name(&self) -> &'static str {
-        "Biometric"
+        "PhaQuan"
     }
-    fn eval(&self, x: &SensorFeatures, phys: &PhysioState, _ctx: &Context) -> PathwayOut {
+
+    fn description(&self) -> &'static str {
+        "Senses signal quality and physical motion."
+    }
+
+    fn eval(&self, x: &SensorFeatures, phys: &PhysioState, _ctx: &Context) -> AgentVote {
         let mut logits = [0.0f32; 5];
         // quality pushes confidence and calms if quality good
         logits[0] += x.quality * 2.0;
         logits[4] += x.motion * 1.5;
-        let conf = (x.quality * phys.confidence).clamp(0.0, 1.0);
-        PathwayOut {
+        let confidence = (x.quality * phys.confidence).clamp(0.0, 1.0);
+        AgentVote {
             logits,
-            conf,
-            explain: 0,
+            confidence,
+            reasoning: "Signal quality and motion heuristics",
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct BeliefDebug {
-    pub per_pathway: Vec<(String, PathwayOut)>,
+    pub per_pathway: Vec<(String, AgentVote)>,
 }
 
 pub struct BeliefEngine {
-    pub pathways: Vec<Box<dyn Pathway>>,
+    pub agents: Vec<Box<dyn CognitiveAgent>>,
     pub w: Vec<f32>,
     pub prior_logits: [f32; 5],
     pub smooth_tau_sec: f32,
@@ -268,18 +284,28 @@ impl BeliefEngine {
     }
 
     pub fn from_config(config: &crate::config::BeliefConfig) -> Self {
-        let paths: Vec<Box<dyn Pathway>> = vec![
-            Box::new(LogicalPathway),
-            Box::new(ContextualPathway),
-            Box::new(BiometricPathway),
+        let agents: Vec<Box<dyn CognitiveAgent>> = vec![
+            Box::new(GeminiAgent),
+            Box::new(MinhGioiAgent),
+            Box::new(PhaQuanAgent),
         ];
         Self {
-            pathways: paths,
-            w: config.pathway_weights.clone(),
+            agents,
+            w: config.agent_weights.clone(),
             prior_logits: config.prior_logits,
             smooth_tau_sec: config.smooth_tau_sec,
             enter_th: config.enter_threshold,
             exit_th: config.exit_threshold,
+        }
+    }
+
+    fn basis_label(idx: usize) -> &'static str {
+        match idx {
+            0 => "Calm",
+            1 => "Stress",
+            2 => "Focus",
+            3 => "Sleepy",
+            _ => "Energize",
         }
     }
 
@@ -369,14 +395,26 @@ impl BeliefEngine {
         let mut per = Vec::new();
         let mut weight_sum = 0.0f32;
         let mut conf_sum = 0.0f32;
-        for (i, p) in self.pathways.iter().enumerate() {
-            let out = p.eval(x, phys, ctx);
-            per.push((p.name().to_string(), out));
+        for (i, agent) in self.agents.iter().enumerate() {
+            let out = agent.eval(x, phys, ctx);
+
+            let vote_p = softmax(out.logits);
+            let vote_idx = argmax(&vote_p);
+            eprintln!(
+                "BELIEF_VOTE: {} votes {} ({:.3}) | conf={:.3} | {}",
+                agent.name(),
+                Self::basis_label(vote_idx),
+                vote_p[vote_idx],
+                out.confidence,
+                agent.description()
+            );
+
+            per.push((agent.name().to_string(), out));
             let w = *self.w.get(i).unwrap_or(&1.0);
             for j in 0..5 {
-                logits_total[j] += w * out.conf * out.logits[j];
+                logits_total[j] += w * out.confidence * out.logits[j];
             }
-            conf_sum += w * out.conf;
+            conf_sum += w * out.confidence;
             weight_sum += w;
         }
         let p = softmax(logits_total);
@@ -405,13 +443,13 @@ impl BeliefEngine {
         let mut logits_total = self.prior_logits;
         let mut weight_sum = 0.0f32;
         let mut conf_sum = 0.0f32;
-        for (i, p) in self.pathways.iter().enumerate() {
-            let out = p.eval(x, phys, ctx);
+        for (i, agent) in self.agents.iter().enumerate() {
+            let out = agent.eval(x, phys, ctx);
             let w = *self.w.get(i).unwrap_or(&1.0);
             for j in 0..5 {
-                logits_total[j] += w * out.conf * out.logits[j];
+                logits_total[j] += w * out.confidence * out.logits[j];
             }
-            conf_sum += w * out.conf;
+            conf_sum += w * out.confidence;
             weight_sum += w;
         }
         let obs_conf = if weight_sum > 0.0 {

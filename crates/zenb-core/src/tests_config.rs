@@ -45,11 +45,11 @@ mod tests {
         let mut config = ZenbConfig::default();
 
         // pathway_weights must have 3 elements
-        config.belief.pathway_weights = vec![1.0, 2.0];
+        config.belief.agent_weights = vec![1.0, 2.0];
         assert!(config.validate().is_err());
 
         // enter_threshold must be > exit_threshold
-        config.belief.pathway_weights = vec![1.0, 1.0, 1.0];
+        config.belief.agent_weights = vec![1.0, 1.0, 1.0];
         config.belief.enter_threshold = 0.4;
         config.belief.exit_threshold = 0.6;
         assert!(config.validate().is_err());
@@ -63,7 +63,7 @@ mod tests {
         assert!(toml_str.contains("[fep]"));
         assert!(toml_str.contains("[belief]"));
         assert!(toml_str.contains("process_noise"));
-        assert!(toml_str.contains("pathway_weights"));
+        assert!(toml_str.contains("agent_weights"));
     }
 
     #[test]
@@ -107,7 +107,7 @@ mod tests {
         assert!(config.validate().is_ok());
 
         assert_eq!(config.fep.process_noise, 0.03);
-        assert_eq!(config.belief.pathway_weights, vec![1.5, 0.5, 1.0]);
+        assert_eq!(config.belief.agent_weights, vec![1.5, 0.5, 1.0]);
         assert_eq!(config.performance.batch_size, 30);
     }
 
@@ -124,7 +124,7 @@ mod tests {
         let loaded = ZenbConfig::from_file(path).unwrap();
 
         assert_eq!(config.fep.process_noise, loaded.fep.process_noise);
-        assert_eq!(config.belief.pathway_weights, loaded.belief.pathway_weights);
+        assert_eq!(config.belief.agent_weights, loaded.belief.agent_weights);
     }
 
     #[test]
@@ -177,7 +177,7 @@ mod tests {
         use crate::belief::BeliefEngine;
 
         let mut config = BeliefConfig::default();
-        config.pathway_weights = vec![2.0, 1.0, 1.5];
+        config.agent_weights = vec![2.0, 1.0, 1.5];
         config.smooth_tau_sec = 5.0;
         config.enter_threshold = 0.7;
 
@@ -271,8 +271,8 @@ mod tests {
         // Check values match
         assert_eq!(original.fep.process_noise, roundtrip.fep.process_noise);
         assert_eq!(
-            original.belief.pathway_weights,
-            roundtrip.belief.pathway_weights
+            original.belief.agent_weights,
+            roundtrip.belief.agent_weights
         );
     }
 }
