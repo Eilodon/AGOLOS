@@ -91,6 +91,64 @@ impl Variable {
     pub const COUNT: usize = 12;
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CausalSource {
+    Prior(String), // e.g., "Meta-Analysis 2024: Stress-HRV"
+    Learned {
+        observation_count: u64,
+        confidence_score: f32,
+    },
+    Heuristic(String), // Temporary placeholder (must be flagged)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvidenceBasedLink {
+    pub weight_mean: f32,     // Current working belief of effect strength
+    pub uncertainty: f32,     // Standard deviation / confidence width
+    pub source: CausalSource, // Origin of this link
+    pub last_updated_us: i64, // Timestamp of last update
+}
+
+impl EvidenceBasedLink {
+    pub fn zero() -> Self {
+        Self {
+            weight_mean: 0.0,
+            uncertainty: 0.0,
+            source: CausalSource::Heuristic("unset".to_string()),
+            last_updated_us: 0,
+        }
+    }
+
+    pub fn prior(weight_mean: f32, note: &str) -> Self {
+        Self {
+            weight_mean,
+            uncertainty: 0.5,
+            source: CausalSource::Prior(note.to_string()),
+            last_updated_us: 0,
+        }
+    }
+
+    /// Precision-weighted fusion of two links (Bayesian update on mean/variance).
+    pub fn merge(&self, other: &EvidenceBasedLink) -> EvidenceBasedLink {
+        let var1 = self.uncertainty.max(1e-6).powi(2);
+        let var2 = other.uncertainty.max(1e-6).powi(2);
+
+        let prec1 = 1.0 / var1;
+        let prec2 = 1.0 / var2;
+        let prec_sum = prec1 + prec2;
+
+        let mean = (self.weight_mean * prec1 + other.weight_mean * prec2) / prec_sum;
+        let unc = (1.0 / prec_sum).sqrt();
+
+        EvidenceBasedLink {
+            weight_mean: mean,
+            uncertainty: unc,
+            source: other.source.clone(),
+            last_updated_us: other.last_updated_us.max(self.last_updated_us),
+        }
+    }
+}
+
 /// Directed Acyclic Graph (DAG) representing causal relationships.
 /// Edge weights represent causal effect strengths: -1.0 (strong negative) to 1.0 (strong positive).
 ///
@@ -101,11 +159,12 @@ pub struct CausalGraph {
     /// Adjacency matrix: weights[cause][effect] = strength
     /// Shape: [Variable::COUNT x Variable::COUNT]
     /// weights[i][j] represents the causal effect of variable i on variable j
-    weights: [[f32; Variable::COUNT]; Variable::COUNT],
+    #[serde(default)]
+    weights: [[Option<EvidenceBasedLink>; Variable::COUNT]; Variable::COUNT],
     /// Pairwise interaction weights between context variables for non-linear effects.
     /// Only the upper-triangular part (i < j) is used.
     #[serde(default)]
-    interaction_weights: [[f32; Variable::COUNT]; Variable::COUNT],
+    interaction_weights: [[Option<EvidenceBasedLink>; Variable::COUNT]; Variable::COUNT],
 }
 
 impl Default for CausalGraph {
@@ -118,8 +177,10 @@ impl CausalGraph {
     /// Create a new causal graph with zero weights (no learned relationships yet).
     pub fn new() -> Self {
         Self {
-            weights: [[0.0; Variable::COUNT]; Variable::COUNT],
-            interaction_weights: [[0.0; Variable::COUNT]; Variable::COUNT],
+            weights: std::array::from_fn(|_| std::array::from_fn(|_| None)),
+            interaction_weights: std::array::from_fn(|_| {
+                std::array::from_fn(|_| None)
+            }),
         }
     }
 
@@ -130,47 +191,79 @@ impl CausalGraph {
 
         // Domain knowledge priors (conservative estimates):
         // NotificationPressure -> HeartRate (stress response)
-        graph.set_effect(Variable::NotificationPressure, Variable::HeartRate, 0.3);
+        graph.set_link(
+            Variable::NotificationPressure,
+            Variable::HeartRate,
+            EvidenceBasedLink::prior(0.3, "Logic: stress response"),
+        );
 
         // NotificationPressure -> HeartRateVariability (reduced HRV under stress)
-        graph.set_effect(
+        graph.set_link(
             Variable::NotificationPressure,
             Variable::HeartRateVariability,
-            -0.2,
+            EvidenceBasedLink::prior(-0.2, "Logic: stress lowers HRV"),
         );
 
         // TimeOfDay -> HeartRate (circadian rhythm)
-        graph.set_effect(Variable::TimeOfDay, Variable::HeartRate, 0.15);
+        graph.set_link(
+            Variable::TimeOfDay,
+            Variable::HeartRate,
+            EvidenceBasedLink::prior(0.15, "Logic: circadian HR"),
+        );
 
         // NoiseLevel -> HeartRate (environmental stressor)
-        graph.set_effect(Variable::NoiseLevel, Variable::HeartRate, 0.2);
+        graph.set_link(
+            Variable::NoiseLevel,
+            Variable::HeartRate,
+            EvidenceBasedLink::prior(0.2, "Logic: noise raises HR"),
+        );
 
         // InteractionIntensity -> NotificationPressure (engagement drives notifications)
-        graph.set_effect(
+        graph.set_link(
             Variable::InteractionIntensity,
             Variable::NotificationPressure,
-            0.25,
+            EvidenceBasedLink::prior(0.25, "Logic: engagement drives notifications"),
         );
 
         // UserAction -> RespiratoryRate (breath guidance intervention)
-        graph.set_effect(Variable::UserAction, Variable::RespiratoryRate, 0.5);
+        graph.set_link(
+            Variable::UserAction,
+            Variable::RespiratoryRate,
+            EvidenceBasedLink::prior(0.5, "Logic: intervention effect"),
+        );
 
         // RespiratoryRate -> HeartRate (respiratory sinus arrhythmia)
-        graph.set_effect(Variable::RespiratoryRate, Variable::HeartRate, -0.3);
+        graph.set_link(
+            Variable::RespiratoryRate,
+            Variable::HeartRate,
+            EvidenceBasedLink::prior(-0.3, "Logic: RSA HR"),
+        );
 
         // RespiratoryRate -> HeartRateVariability (breath coherence)
-        graph.set_effect(
+        graph.set_link(
             Variable::RespiratoryRate,
             Variable::HeartRateVariability,
-            0.4,
+            EvidenceBasedLink::prior(0.4, "Logic: RSA coherence"),
         );
 
         // Cognitive priors
-        graph.set_effect(Variable::CognitiveLoad, Variable::NotificationPressure, 0.4);
+        graph.set_link(
+            Variable::CognitiveLoad,
+            Variable::NotificationPressure,
+            EvidenceBasedLink::prior(0.4, "Logic: load drives notifications"),
+        );
         // Positive valence lowers heart rate
-        graph.set_effect(Variable::EmotionalValence, Variable::HeartRate, -0.3);
+        graph.set_link(
+            Variable::EmotionalValence,
+            Variable::HeartRate,
+            EvidenceBasedLink::prior(-0.3, "Logic: positive lowers HR"),
+        );
         // Higher arousal raises heart rate
-        graph.set_effect(Variable::VoiceArousal, Variable::HeartRate, 0.2);
+        graph.set_link(
+            Variable::VoiceArousal,
+            Variable::HeartRate,
+            EvidenceBasedLink::prior(0.2, "Logic: arousal raises HR"),
+        );
 
         graph
     }
@@ -179,12 +272,25 @@ impl CausalGraph {
     /// Returns 0.0 if no causal relationship exists.
     pub fn get_effect(&self, cause: Variable, target: Variable) -> f32 {
         self.weights[cause.index()][target.index()]
+            .as_ref()
+            .map(|l| l.weight_mean)
+            .unwrap_or(0.0)
     }
 
     /// Set the causal effect strength from cause to target.
     /// Weight should be in range [-1.0, 1.0].
-    pub fn set_effect(&mut self, cause: Variable, target: Variable, weight: f32) {
-        self.weights[cause.index()][target.index()] = weight.clamp(-1.0, 1.0);
+    pub fn set_link(&mut self, cause: Variable, target: Variable, link: EvidenceBasedLink) {
+        let mut link = link;
+        link.weight_mean = link.weight_mean.clamp(-1.0, 1.0);
+
+        // If an existing link is present, fuse using Bayesian precision-weighted merge.
+        let fused = if let Some(existing) = &self.weights[cause.index()][target.index()] {
+            existing.merge(&link)
+        } else {
+            link
+        };
+
+        self.weights[cause.index()][target.index()] = Some(fused);
     }
 
     /// Get all incoming causal effects for a target variable.
@@ -194,12 +300,15 @@ impl CausalGraph {
         Variable::all()
             .iter()
             .filter_map(|&var| {
-                let weight = self.weights[var.index()][target_idx];
-                if weight.abs() > 1e-6 {
-                    Some((var, weight))
-                } else {
-                    None
-                }
+                self.weights[var.index()][target_idx]
+                    .as_ref()
+                    .and_then(|l| {
+                        if l.weight_mean.abs() > 1e-6 {
+                            Some((var, l.weight_mean))
+                        } else {
+                            None
+                        }
+                    })
             })
             .collect()
     }
@@ -211,12 +320,15 @@ impl CausalGraph {
         Variable::all()
             .iter()
             .filter_map(|&var| {
-                let weight = self.weights[cause_idx][var.index()];
-                if weight.abs() > 1e-6 {
-                    Some((var, weight))
-                } else {
-                    None
-                }
+                self.weights[cause_idx][var.index()]
+                    .as_ref()
+                    .and_then(|l| {
+                        if l.weight_mean.abs() > 1e-6 {
+                            Some((var, l.weight_mean))
+                        } else {
+                            None
+                        }
+                    })
             })
             .collect()
     }
@@ -249,9 +361,11 @@ impl CausalGraph {
             // Sum all incoming causal effects
             for cause_var in Variable::all() {
                 let cause_idx = cause_var.index();
-                let weight = self.weights[cause_idx][target_idx];
-                if weight.abs() > 1e-6 {
-                    delta += state_values[cause_idx] * weight;
+                if let Some(link) = &self.weights[cause_idx][target_idx] {
+                    let weight = link.weight_mean;
+                    if weight.abs() > 1e-6 {
+                        delta += state_values[cause_idx] * weight;
+                    }
                 }
             }
 
@@ -321,7 +435,7 @@ impl CausalGraph {
         // Cold start: return neutral probability to allow exploration
         let has_learned_weights = Variable::all()
             .iter()
-            .any(|&var| self.weights[var.index()][Variable::UserAction.index()].abs() > 1e-6);
+            .any(|&var| self.weights[var.index()][Variable::UserAction.index()].is_some());
 
         if !has_learned_weights {
             return 0.5;
@@ -338,13 +452,12 @@ impl CausalGraph {
             }
 
             // Get the causal effect of this context variable on UserAction
-            let weight = self.weights[var_idx][Variable::UserAction.index()];
-
-            if weight.abs() > 1e-6 {
-                // Positive weight = context supports action success
-                // Negative weight = context inhibits action success
-                weighted_sum += context_state[var_idx] * weight;
-                total_weight += weight.abs();
+            if let Some(link) = &self.weights[var_idx][Variable::UserAction.index()] {
+                let weight = link.weight_mean;
+                if weight.abs() > 1e-6 {
+                    weighted_sum += context_state[var_idx] * weight;
+                    total_weight += weight.abs();
+                }
             }
         }
 
@@ -353,11 +466,13 @@ impl CausalGraph {
             if i >= context_state.len() { break; }
             for j in (i + 1)..Variable::COUNT {
                 if j >= context_state.len() { break; }
-                let w = self.interaction_weights[i][j];
-                if w.abs() > 1e-6 {
-                    let interaction = context_state[i] * context_state[j];
-                    weighted_sum += interaction * w;
-                    total_weight += w.abs();
+                if let Some(link) = &self.interaction_weights[i][j] {
+                    let w = link.weight_mean;
+                    if w.abs() > 1e-6 {
+                        let interaction = context_state[i] * context_state[j];
+                        weighted_sum += interaction * w;
+                        total_weight += w.abs();
+                    }
                 }
             }
         }
@@ -407,11 +522,17 @@ impl CausalGraph {
             }
 
             // Gradient update: weight += lr * context_value * reward
-            let current_weight = self.weights[var_idx][target_idx];
-            let delta = learning_rate * context_value * reward;
-            let new_weight = (current_weight + delta).clamp(-1.0, 1.0);
-
-            self.weights[var_idx][target_idx] = new_weight;
+            let updated = if let Some(existing) = &self.weights[var_idx][target_idx] {
+                let mut link = existing.clone();
+                link.weight_mean = (link.weight_mean + learning_rate * context_value * reward)
+                    .clamp(-1.0, 1.0);
+                link
+            } else {
+                let mut link = EvidenceBasedLink::zero();
+                link.weight_mean = (learning_rate * context_value * reward).clamp(-1.0, 1.0);
+                link
+            };
+            self.weights[var_idx][target_idx] = Some(updated);
         }
 
         // Update pairwise interaction weights (upper triangular only)
@@ -423,11 +544,18 @@ impl CausalGraph {
                 if j >= context_state.len() { break; }
                 let vj = context_state[j];
                 if vj.abs() < 1e-6 { continue; }
-                let current_w = self.interaction_weights[i][j];
-                // Smaller learning rate for interactions to ensure stability
-                let delta = (learning_rate * 0.5) * (vi * vj) * reward;
-                let new_w = (current_w + delta).clamp(-1.0, 1.0);
-                self.interaction_weights[i][j] = new_w;
+                let updated = if let Some(existing) = &self.interaction_weights[i][j] {
+                    let mut link = existing.clone();
+                    let delta = (learning_rate * 0.5) * (vi * vj) * reward;
+                    link.weight_mean = (link.weight_mean + delta).clamp(-1.0, 1.0);
+                    link
+                } else {
+                    let mut link = EvidenceBasedLink::zero();
+                    let delta = (learning_rate * 0.5) * (vi * vj) * reward;
+                    link.weight_mean = delta.clamp(-1.0, 1.0);
+                    link
+                };
+                self.interaction_weights[i][j] = Some(updated);
             }
         }
     }
@@ -455,13 +583,15 @@ impl CausalGraph {
 
         // Check all neighbors
         for i in 0..Variable::COUNT {
-            if self.weights[v][i].abs() > 1e-6 {
-                if !visited[i] {
-                    if self.has_cycle_util(i, visited, rec_stack) {
+            if let Some(link) = &self.weights[v][i] {
+                if link.weight_mean.abs() > 1e-6 {
+                    if !visited[i] {
+                        if self.has_cycle_util(i, visited, rec_stack) {
+                            return true;
+                        }
+                    } else if rec_stack[i] {
                         return true;
                     }
-                } else if rec_stack[i] {
-                    return true;
                 }
             }
         }
@@ -728,7 +858,11 @@ mod tests {
     #[test]
     fn test_causal_graph_set_get() {
         let mut graph = CausalGraph::new();
-        graph.set_effect(Variable::NotificationPressure, Variable::HeartRate, 0.5);
+        graph.set_link(
+            Variable::NotificationPressure,
+            Variable::HeartRate,
+            EvidenceBasedLink::prior(0.5, "test"),
+        );
         assert_eq!(
             graph.get_effect(Variable::NotificationPressure, Variable::HeartRate),
             0.5
@@ -741,8 +875,16 @@ mod tests {
         assert!(graph.is_acyclic());
 
         let mut cyclic_graph = CausalGraph::new();
-        cyclic_graph.set_effect(Variable::HeartRate, Variable::NotificationPressure, 0.5);
-        cyclic_graph.set_effect(Variable::NotificationPressure, Variable::HeartRate, 0.5);
+        cyclic_graph.set_link(
+            Variable::HeartRate,
+            Variable::NotificationPressure,
+            EvidenceBasedLink::prior(0.5, "test"),
+        );
+        cyclic_graph.set_link(
+            Variable::NotificationPressure,
+            Variable::HeartRate,
+            EvidenceBasedLink::prior(0.5, "test"),
+        );
         assert!(!cyclic_graph.is_acyclic());
     }
 

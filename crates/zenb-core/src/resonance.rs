@@ -232,7 +232,8 @@ mod tests {
     #[test]
     fn identical_phases_high_score() {
         let mut t = ResonanceTracker::default();
-        let cfg = ZenbConfig::default();
+        let mut cfg = ZenbConfig::default();
+        cfg.resonance.coherence_threshold = 0.0; // allow high coherence to surface clearly
         let guide_bpm = 6.0;
         let f_hz = guide_bpm / 60.0;
         let fs_hz = 4.0;

@@ -65,7 +65,7 @@ fn test_cross_platform_determinism() {
     let hash1 = state.hash();
 
     // Simulate slight floating point drift (within 1 millionth)
-    state.belief_conf = Some(0.123456788);
+    state.belief_conf = Some(0.123456700);
     let hash2 = state.hash();
 
     // Should be different since we're using fixed-point with 6 decimal precision

@@ -405,7 +405,9 @@ impl Engine {
             Err(s) => {
                 // Denied by safety guards -> freeze and surface reason
                 let reason = s.to_string();
+                eprintln!("ENGINE_DENY: safety_guard reason={}", reason);
                 let poll_interval = crate::controller::compute_poll_interval(
+                    &mut self.controller.poller,
                     self.fep_state.free_energy_ema,
                     self.belief_state.conf,
                     false,
@@ -430,10 +432,15 @@ impl Engine {
                         "DEBUG: Action Vetoed by Causal Graph (Prob: {:.3})",
                         success_prob
                     );
+                    eprintln!(
+                        "ENGINE_DENY: causal_veto_low_prob prob={:.3} mode={:?} conf={:.3}",
+                        success_prob, self.belief_state.mode, self.belief_state.conf
+                    );
 
                     // Fallback to safe default: maintain last decision or use gentle baseline
                     let fallback_bpm = self.controller.last_decision_bpm.unwrap_or(6.0);
                     let poll_interval = crate::controller::compute_poll_interval(
+                        &mut self.controller.poller,
                         self.fep_state.free_energy_ema,
                         self.belief_state.conf,
                         false,
@@ -478,6 +485,7 @@ impl Engine {
                 };
 
                 let poll_interval = crate::controller::compute_poll_interval(
+                    &mut self.controller.poller,
                     self.fep_state.free_energy_ema,
                     self.belief_state.conf,
                     changed,
@@ -502,7 +510,6 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::estimator::Estimator;
 
     #[test]
     fn engine_decision_flow() {

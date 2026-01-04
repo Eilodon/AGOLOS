@@ -83,7 +83,7 @@ pub use belief::{
     Context,        // Contextual info (hour, charging, sessions)
     FepState,       // Free Energy Principle state
     FepUpdateOut,   // FEP update output
-    CognitiveAgent, // Agent trait (was Pathway)
+    AgentStrategy,  // Data-oriented agent enum
     AgentVote,      // Agent vote output
     PhysioState,    // Physiological state
     SensorFeatures, // Sensor input

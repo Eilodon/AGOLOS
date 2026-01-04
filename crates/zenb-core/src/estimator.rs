@@ -72,33 +72,46 @@ impl Estimator {
                 Some(prev) => prev * (1.0 - alpha) + v * alpha,
                 None => v,
             });
+        } else {
+            self.hr_ema = None;
         }
         if let Some(v) = rmssd {
             self.rmssd_ema = Some(match self.rmssd_ema {
                 Some(prev) => prev * (1.0 - alpha) + v * alpha,
                 None => v,
             });
+        } else {
+            self.rmssd_ema = None;
         }
         if let Some(v) = rr {
             self.rr_ema = Some(match self.rr_ema {
                 Some(prev) => prev * (1.0 - alpha) + v * alpha,
                 None => v,
             });
+        } else {
+            self.rr_ema = None;
         }
 
         self.last_ts_us = Some(ts_us);
 
         // confidence heuristic: presence of rr + hr and rmssd, and magnitude of rmssd
         let mut conf = 0.0f32;
+        let mut present = 0;
         if self.hr_ema.is_some() {
             conf += 0.35;
+            present += 1;
         }
         if self.rr_ema.is_some() {
             conf += 0.35;
+            present += 1;
         }
         if self.rmssd_ema.is_some() {
             conf += 0.3;
+            present += 1;
         }
+        // Penalty for missing features: scale by coverage ratio
+        let coverage = (present as f32 / 3.0).clamp(0.0, 1.0);
+        conf *= coverage;
         // more rmssd implies better signal (not perfect, but simple)
         if let Some(rm) = self.rmssd_ema {
             conf *= (rm / (rm + 20.0)).clamp(0.0, 1.0);

@@ -166,100 +166,100 @@ pub fn hysteresis_collapse(
     }
 }
 
-/// Cognitive agent interface ("Digital Sangha")
-pub trait CognitiveAgent: Send + Sync {
-    fn name(&self) -> &'static str;
-    fn description(&self) -> &'static str;
-    fn eval(&self, x: &SensorFeatures, phys: &PhysioState, ctx: &Context) -> AgentVote;
+/// Agent configs (data-only, serializable).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GeminiConfig;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MinhGioiConfig;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PhaQuanConfig;
+
+/// Data-oriented agent enum for static dispatch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AgentStrategy {
+    Gemini(GeminiConfig),
+    MinhGioi(MinhGioiConfig),
+    PhaQuan(PhaQuanConfig),
 }
 
-/// GeminiAgent (The Intellect)
-pub struct GeminiAgent;
-impl CognitiveAgent for GeminiAgent {
-    fn name(&self) -> &'static str {
-        "Gemini"
+fn gemini_eval(_cfg: &GeminiConfig, x: &SensorFeatures, phys: &PhysioState) -> AgentVote {
+    let mut logits = [0.0f32; 5];
+    let rm = phys.rmssd.unwrap_or(20.0);
+    if rm > 50.0 {
+        logits[0] += 2.0;
+    } else {
+        logits[1] += (50.0 - rm) / 50.0;
     }
-
-    fn description(&self) -> &'static str {
-        "Analyzes raw physiological data logic (HR/RMSSD)."
-    }
-
-    fn eval(&self, x: &SensorFeatures, phys: &PhysioState, _ctx: &Context) -> AgentVote {
-        // heuristics: high rmssd -> calm, low rmssd -> stress; rr high -> sleepy, motion -> energize
-        let mut logits = [0.0f32; 5];
-        let rm = phys.rmssd.unwrap_or(20.0);
-        if rm > 50.0 {
-            logits[0] += 2.0;
-        } else {
-            logits[1] += (50.0 - rm) / 50.0;
-        }
-        if let Some(rr) = phys.rr_bpm {
-            if rr > 12.0 {
-                logits[3] += 1.5;
-            }
-        }
-        if x.motion > 0.5 {
-            logits[4] += 2.0;
-        }
-        if phys.hr_bpm.unwrap_or(60.0) > 100.0 {
-            logits[1] += 1.0;
-        }
-        AgentVote {
-            logits,
-            confidence: phys.confidence.clamp(0.0, 1.0),
-            reasoning: "HR/RMSSD/respiration heuristics",
+    if let Some(rr) = phys.rr_bpm {
+        if rr > 12.0 {
+            logits[3] += 1.5;
         }
     }
-}
-
-/// MinhGioiAgent (The Protector/Context)
-pub struct MinhGioiAgent;
-impl CognitiveAgent for MinhGioiAgent {
-    fn name(&self) -> &'static str {
-        "MinhGioi"
+    if x.motion > 0.5 {
+        logits[4] += 2.0;
     }
-
-    fn description(&self) -> &'static str {
-        "Monitors environmental and temporal constraints."
+    if phys.hr_bpm.unwrap_or(60.0) > 100.0 {
+        logits[1] += 1.0;
     }
-
-    fn eval(&self, _x: &SensorFeatures, _phys: &PhysioState, ctx: &Context) -> AgentVote {
-        let mut logits = [0.0f32; 5];
-        if ctx.local_hour >= 22 || ctx.local_hour <= 6 {
-            logits[3] += 2.0;
-        }
-        if ctx.recent_sessions > 3 {
-            logits[2] += 1.0;
-        }
-        AgentVote {
-            logits,
-            confidence: 0.7,
-            reasoning: "Time-of-day and session cadence heuristics",
-        }
+    AgentVote {
+        logits,
+        confidence: phys.confidence.clamp(0.0, 1.0),
+        reasoning: "HR/RMSSD/respiration heuristics",
     }
 }
 
-/// PhaQuanAgent (The Body/Sensation)
-pub struct PhaQuanAgent;
-impl CognitiveAgent for PhaQuanAgent {
-    fn name(&self) -> &'static str {
-        "PhaQuan"
+fn minh_gioi_eval(_cfg: &MinhGioiConfig, ctx: &Context) -> AgentVote {
+    let mut logits = [0.0f32; 5];
+    if ctx.local_hour >= 22 || ctx.local_hour <= 6 {
+        logits[3] += 2.0;
+    }
+    if ctx.recent_sessions > 3 {
+        logits[2] += 1.0;
+    }
+    AgentVote {
+        logits,
+        confidence: 0.7,
+        reasoning: "Time-of-day and session cadence heuristics",
+    }
+}
+
+fn pha_quan_eval(_cfg: &PhaQuanConfig, x: &SensorFeatures, phys: &PhysioState) -> AgentVote {
+    let mut logits = [0.0f32; 5];
+    // quality pushes confidence and calms if quality good
+    logits[0] += x.quality * 2.0;
+    logits[4] += x.motion * 1.5;
+    let confidence = (x.quality * phys.confidence).clamp(0.0, 1.0);
+    AgentVote {
+        logits,
+        confidence,
+        reasoning: "Signal quality and motion heuristics",
+    }
+}
+
+impl AgentStrategy {
+    pub fn name(&self) -> &'static str {
+        match self {
+            AgentStrategy::Gemini(_) => "Gemini",
+            AgentStrategy::MinhGioi(_) => "MinhGioi",
+            AgentStrategy::PhaQuan(_) => "PhaQuan",
+        }
     }
 
-    fn description(&self) -> &'static str {
-        "Senses signal quality and physical motion."
+    pub fn description(&self) -> &'static str {
+        match self {
+            AgentStrategy::Gemini(_) => "Analyzes raw physiological data logic (HR/RMSSD).",
+            AgentStrategy::MinhGioi(_) => "Monitors environmental and temporal constraints.",
+            AgentStrategy::PhaQuan(_) => "Senses signal quality and physical motion.",
+        }
     }
 
-    fn eval(&self, x: &SensorFeatures, phys: &PhysioState, _ctx: &Context) -> AgentVote {
-        let mut logits = [0.0f32; 5];
-        // quality pushes confidence and calms if quality good
-        logits[0] += x.quality * 2.0;
-        logits[4] += x.motion * 1.5;
-        let confidence = (x.quality * phys.confidence).clamp(0.0, 1.0);
-        AgentVote {
-            logits,
-            confidence,
-            reasoning: "Signal quality and motion heuristics",
+    pub fn eval(&self, x: &SensorFeatures, phys: &PhysioState, ctx: &Context) -> AgentVote {
+        match self {
+            AgentStrategy::Gemini(cfg) => gemini_eval(cfg, x, phys),
+            AgentStrategy::MinhGioi(cfg) => minh_gioi_eval(cfg, ctx),
+            AgentStrategy::PhaQuan(cfg) => pha_quan_eval(cfg, x, phys),
         }
     }
 }
@@ -270,7 +270,7 @@ pub struct BeliefDebug {
 }
 
 pub struct BeliefEngine {
-    pub agents: Vec<Box<dyn CognitiveAgent>>,
+    pub agents: Vec<AgentStrategy>,
     pub w: Vec<f32>,
     pub prior_logits: [f32; 5],
     pub smooth_tau_sec: f32,
@@ -284,10 +284,10 @@ impl BeliefEngine {
     }
 
     pub fn from_config(config: &crate::config::BeliefConfig) -> Self {
-        let agents: Vec<Box<dyn CognitiveAgent>> = vec![
-            Box::new(GeminiAgent),
-            Box::new(MinhGioiAgent),
-            Box::new(PhaQuanAgent),
+        let agents: Vec<AgentStrategy> = vec![
+            AgentStrategy::Gemini(GeminiConfig::default()),
+            AgentStrategy::MinhGioi(MinhGioiConfig::default()),
+            AgentStrategy::PhaQuan(PhaQuanConfig::default()),
         ];
         Self {
             agents,
@@ -493,6 +493,24 @@ impl BeliefEngine {
         resonance: ResonanceFeatures,
         cfg: &ZenbConfig,
     ) -> FepUpdateOut {
+        // Freeze learning if base learning rate is zero
+        if cfg.fep.lr_base == 0.0 {
+            return FepUpdateOut {
+                belief: BeliefState {
+                    p: prev_fep.mu, // Not a real probability; keeps structure but unused downstream in this branch
+                    conf: prev_fep.lr,
+                    mode: prev_mode,
+                },
+                fep: FepState {
+                    mu: prev_fep.mu,
+                    sigma: prev_fep.sigma,
+                    free_energy_ema: prev_fep.free_energy_ema,
+                    lr: 0.0,
+                },
+                resonance_score: resonance.resonance_score,
+            };
+        }
+
         let eps = 1e-6f32;
         let (fused_logits, obs_conf) = self.fused_logits_and_conf(x, phys, ctx);
         let mu_obs = softmax(fused_logits);
