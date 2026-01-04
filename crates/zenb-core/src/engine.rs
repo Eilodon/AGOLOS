@@ -349,6 +349,12 @@ impl Engine {
             hard_th: self.config.safety.trauma_hard_th,
             soft_th: self.config.safety.trauma_soft_th,
         }));
+        // Fix: Use controller state for rate limiting (stateless guard needs history)
+        let last_patch_sec = self
+            .controller
+            .last_decision_ts_us
+            .map(|last| crate::domain::dt_sec(ts_us, last));
+
         guards.extend(vec![
             Box::new(crate::safety_swarm::ConfidenceGuard { min_conf: 0.2 }),
             Box::new(crate::safety_swarm::BreathBoundsGuard {
@@ -361,7 +367,7 @@ impl Engine {
             }),
             Box::new(crate::safety_swarm::RateLimitGuard {
                 min_interval_sec: 10.0,
-                last_patch_sec: None,
+                last_patch_sec,
             }),
             Box::new(crate::safety_swarm::ComfortGuard),
             Box::new(crate::safety_swarm::ResourceGuard),
