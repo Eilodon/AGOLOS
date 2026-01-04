@@ -5,6 +5,7 @@
 //! The canonical BeliefState is crate::belief::BeliefState (5-mode collapsed).
 //! CausalBeliefState (3-factor) is exported for causal layer use only.
 
+pub mod agent_container;
 pub mod belief;
 pub mod breath_engine;
 pub mod causal;
@@ -19,6 +20,14 @@ pub mod replay;
 pub mod resonance;
 pub mod safety_swarm;
 pub mod trauma_cache;
+pub mod validation;
+
+#[cfg(test)]
+pub mod tests_config;
+#[cfg(test)]
+pub mod tests_determinism;
+#[cfg(test)]
+pub mod tests_estimator;
 
 // ============================================================================
 // CURATED PUBLIC API EXPORTS (PR1: No more wildcard exports)
@@ -100,10 +109,3 @@ pub use causal::{
     ActionPolicy, ActionType, CausalBuffer, CausalGraph, ObservationSnapshot, PredictedState,
     Variable,
 };
-
-#[cfg(test)]
-mod tests_config;
-#[cfg(test)]
-mod tests_determinism;
-#[cfg(test)]
-mod tests_estimator;
