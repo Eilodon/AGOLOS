@@ -228,6 +228,206 @@ impl PolicyEvaluation {
     }
 }
 
+// ============================================================================
+// FULL EFE CALCULATOR WITH EPISTEMIC VALUE
+// ============================================================================
+
+/// Expected Free Energy Calculator for Active Inference policy selection.
+/// 
+/// EFE = G(π) = E_q[D_KL[q(o|s,π) || p(o|C)] + H[q(s|o,π)]]
+///            = Risk (pragmatic) + Ambiguity (epistemic)
+/// 
+/// Where:
+/// - Risk: Expected divergence from preferred outcomes (C = preferences)
+/// - Ambiguity: Expected uncertainty about states given observations
+#[derive(Debug, Clone)]
+pub struct EFECalculator {
+    /// Precision (inverse temperature) for softmax policy selection
+    pub precision: f32,
+    
+    /// Weight for pragmatic value (goal achievement)
+    pub pragmatic_weight: f32,
+    
+    /// Weight for epistemic value (information gain)
+    pub epistemic_weight: f32,
+    
+    /// Prior probability of each policy (policy prior)
+    pub policy_prior: f32,
+    
+    /// Homeostatic setpoint for arousal (target state)
+    pub arousal_setpoint: f32,
+    
+    /// Homeostatic setpoint for HRV
+    pub hrv_setpoint: f32,
+}
+
+impl Default for EFECalculator {
+    fn default() -> Self {
+        Self {
+            precision: 4.0,          // Moderate exploration/exploitation balance
+            pragmatic_weight: 0.7,   // Emphasize goal achievement
+            epistemic_weight: 0.3,   // But also value information
+            policy_prior: 0.25,      // Uniform over 4 policy types
+            arousal_setpoint: 0.4,   // Calm default
+            hrv_setpoint: 50.0,      // Target RMSSD in ms
+        }
+    }
+}
+
+impl EFECalculator {
+    /// Compute full expected free energy for a policy given current beliefs.
+    /// 
+    /// # Arguments
+    /// * `policy` - The policy to evaluate
+    /// * `belief_state` - Current posterior beliefs (5-mode distribution)
+    /// * `belief_uncertainty` - Variance/entropy of current beliefs
+    /// * `predicted_state` - Expected state after executing policy
+    /// * `predicted_uncertainty` - Expected uncertainty after observation
+    pub fn compute_efe(
+        &self,
+        policy: &ActionPolicy,
+        belief_state: &[f32; 5],
+        belief_uncertainty: f32,
+        predicted_state: &[f32; 5],
+        predicted_uncertainty: f32,
+    ) -> PolicyEvaluation {
+        // 1. PRAGMATIC VALUE: How much does this policy reduce divergence from preferences?
+        // R = -D_KL[q(s|π) || p(s|C)] ≈ negative distance to homeostatic setpoint
+        let pragmatic_value = self.compute_pragmatic_value(policy, predicted_state);
+        
+        // 2. EPISTEMIC VALUE: How much information does this policy provide?
+        // I = H[q(s)] - E[H[q(s|o,π)]] = current entropy - expected posterior entropy
+        let epistemic_value = self.compute_epistemic_value(
+            policy,
+            belief_uncertainty,
+            predicted_uncertainty,
+        );
+        
+        // 3. Combine with weights
+        let combined_value = self.pragmatic_weight * pragmatic_value 
+                           + self.epistemic_weight * epistemic_value;
+        
+        // 4. EFE is negative value (minimize G = maximize value)
+        let efe = -combined_value;
+        
+        let mut eval = PolicyEvaluation::new(policy.clone(), pragmatic_value, epistemic_value);
+        eval.expected_free_energy = efe;
+        eval
+    }
+    
+    /// Compute pragmatic value: how well does policy achieve goals?
+    fn compute_pragmatic_value(&self, policy: &ActionPolicy, predicted_state: &[f32; 5]) -> f32 {
+        // Predicted arousal (mode 1 = Stress)
+        let predicted_arousal = predicted_state[1];
+        
+        // Distance from homeostatic setpoint
+        let arousal_error = (predicted_arousal - self.arousal_setpoint).abs();
+        
+        // Base value from state improvement
+        let state_value = 1.0 - arousal_error.min(1.0);
+        
+        // Policy-specific adjustments
+        let policy_bonus = match policy {
+            ActionPolicy::NoAction => {
+                // NoAction gets bonus if state is already good
+                if arousal_error < 0.2 { 0.2 } else { -0.1 }
+            }
+            ActionPolicy::GuidanceBreath(ref params) => {
+                // Breath guidance gets bonus proportional to expected regulation
+                let regulation_strength = (6.0 / params.target_bpm).clamp(0.5, 1.5);
+                regulation_strength * 0.3
+            }
+            ActionPolicy::DigitalIntervention(ref intervention) => {
+                // Digital interventions get smaller bonus (indirect effect)
+                match intervention.action {
+                    DigitalActionType::BlockNotifications => 0.15,
+                    DigitalActionType::PlaySoundscape => 0.2,
+                    DigitalActionType::SuggestBreak => 0.1,
+                    DigitalActionType::LaunchApp => 0.1,
+                }
+            }
+        };
+        
+        (state_value + policy_bonus).clamp(0.0, 1.0)
+    }
+    
+    /// Compute epistemic value: information gain from policy execution.
+    fn compute_epistemic_value(
+        &self,
+        policy: &ActionPolicy,
+        current_uncertainty: f32,
+        predicted_uncertainty: f32,
+    ) -> f32 {
+        // Information gain = reduction in entropy
+        // I(π) = H[q(s)] - E[H[q(s|o,π)]]
+        let entropy_reduction = (current_uncertainty - predicted_uncertainty).max(0.0);
+        
+        // Policy-specific epistemic bonus
+        let exploration_bonus = match policy {
+            ActionPolicy::NoAction => {
+                // NoAction has high epistemic value when uncertain
+                // (pure observation to gather information)
+                if current_uncertainty > 0.5 { 0.4 } else { 0.1 }
+            }
+            ActionPolicy::GuidanceBreath(_) => {
+                // Breath guidance provides direct feedback (high epistemic value)
+                0.25
+            }
+            ActionPolicy::DigitalIntervention(ref intervention) => {
+                // Digital interventions provide indirect feedback
+                match intervention.action {
+                    DigitalActionType::PlaySoundscape => 0.15, // Some feedback possible
+                    _ => 0.05, // Low direct feedback
+                }
+            }
+        };
+        
+        (entropy_reduction + exploration_bonus).clamp(0.0, 1.0)
+    }
+    
+    /// Select policy using softmax over negative EFE values.
+    /// Returns policies sorted by selection probability (highest first).
+    pub fn select_policy(&self, evaluations: &mut [PolicyEvaluation]) {
+        if evaluations.is_empty() {
+            return;
+        }
+        
+        // Compute softmax over -EFE (minimizing EFE = maximizing -EFE)
+        let neg_efes: Vec<f32> = evaluations.iter()
+            .map(|e| -e.expected_free_energy * self.precision)
+            .collect();
+        
+        // Stable softmax
+        let max_neg_efe = neg_efes.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let exp_sum: f32 = neg_efes.iter()
+            .map(|&x| (x - max_neg_efe).exp())
+            .sum();
+        
+        for (i, eval) in evaluations.iter_mut().enumerate() {
+            eval.selection_probability = ((neg_efes[i] - max_neg_efe).exp()) / exp_sum;
+        }
+        
+        // Sort by probability (descending)
+        evaluations.sort_by(|a, b| b.selection_probability
+            .partial_cmp(&a.selection_probability)
+            .unwrap_or(std::cmp::Ordering::Equal));
+    }
+    
+    /// Sample a policy using the computed selection probabilities.
+    /// Uses simple weighted random selection.
+    pub fn sample_policy<'a>(&self, evaluations: &'a [PolicyEvaluation], rng_value: f32) -> &'a ActionPolicy {
+        let mut cumulative = 0.0;
+        for eval in evaluations {
+            cumulative += eval.selection_probability;
+            if rng_value < cumulative {
+                return &eval.policy;
+            }
+        }
+        // Fallback to last policy
+        &evaluations.last().map(|e| &e.policy).unwrap_or(&ActionPolicy::NoAction)
+    }
+}
+
 /// Policy library: pre-defined policies for common scenarios.
 /// These serve as a "policy prior" in Active Inference - the system's
 /// innate repertoire of behaviors before learning.

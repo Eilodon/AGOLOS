@@ -6,6 +6,7 @@ use crate::domain::ControlDecision;
 use crate::estimator::Estimator;
 use crate::estimator::Estimate;
 use crate::resonance::ResonanceTracker;
+use crate::safety::{SafetyMonitor, RuntimeState};
 use crate::safety_swarm::TraumaRegistry;
 use crate::trauma_cache::TraumaCache;
 
@@ -34,6 +35,10 @@ pub struct Engine {
     pub last_observation: Option<crate::domain::Observation>,
     pub trauma_registry: TraumaRegistry,
     pub trauma_cache: TraumaCache,
+    /// LTL safety monitor for runtime verification
+    pub safety_monitor: SafetyMonitor,
+    /// Session start time for tracking duration
+    pub session_start_ts_us: Option<i64>,
 }
 
 impl Engine {
@@ -87,6 +92,8 @@ impl Engine {
             last_observation: None,
             trauma_registry: TraumaRegistry::new(),
             trauma_cache: TraumaCache::new(),
+            safety_monitor: SafetyMonitor::new(),
+            session_start_ts_us: None,
         }
     }
 
@@ -399,6 +406,52 @@ impl Engine {
         // This prevents actions that historically fail in this context
         const MIN_SUCCESS_PROB: f32 = 0.3;
         const HIGH_SUCCESS_PROB: f32 = 0.8;
+
+        // LTL Safety Monitor Check
+        // Verify tempo bounds, panic halt, and safety lock invariants
+        let session_duration = match self.session_start_ts_us {
+            Some(start) => crate::domain::dt_sec(ts_us, start),
+            None => {
+                // Initialize session start time on first control decision
+                self.session_start_ts_us = Some(ts_us);
+                0.0
+            }
+        };
+        
+        let runtime_state = RuntimeState {
+            tempo_scale: proposed / 6.0, // Normalize to baseline 6 BPM
+            status: "RUNNING".to_string(),
+            session_duration,
+            prediction_error: self.fep_state.free_energy_ema,
+            last_update_timestamp: ts_us as u64,
+        };
+        
+        if let Err(violations) = self.safety_monitor.check(&runtime_state) {
+            let reason = format!("ltl_violation:{}", violations[0].property_name);
+            eprintln!("ENGINE_DENY: LTL safety violation: {:?}", violations);
+            
+            let poll_interval = crate::controller::compute_poll_interval(
+                &mut self.controller.poller,
+                self.fep_state.free_energy_ema,
+                self.belief_state.conf,
+                false,
+                &self.context,
+            );
+            
+            // Shield tempo to safe bounds
+            let safe_tempo = self.safety_monitor.shield_tempo(proposed / 6.0) * 6.0;
+            
+            return (
+                ControlDecision {
+                    target_rate_bpm: safe_tempo,
+                    confidence: est.confidence * 0.3, // Heavily reduced confidence
+                    recommended_poll_interval_ms: poll_interval,
+                },
+                false,
+                Some((self.belief_state.mode as u8, 0, self.belief_state.conf)),
+                Some(reason),
+            );
+        }
 
         let context_state = self.causal_graph.extract_state_values(&self.belief_state);
         let breath_action = crate::causal::ActionPolicy {

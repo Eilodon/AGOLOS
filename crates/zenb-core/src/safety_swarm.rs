@@ -306,7 +306,9 @@ pub struct TraumaGuard<'a> {
     pub source: &'a dyn TraumaSource,
     pub hard_th: f32,
     pub soft_th: f32,
-    /// In test mode we allow zero/negative timestamps to bypass time sanity
+    /// DEPRECATED: This field is ignored. Test time bypass is now compile-time only.
+    /// Use `SafetyConfig::allow_test_time()` for the actual behavior.
+    #[deprecated(since = "0.2.0", note = "Use SafetyConfig::allow_test_time() instead")]
     pub allow_test_time: bool,
 }
 
@@ -317,7 +319,18 @@ impl<'a> TraumaGuard<'a> {
 }
 
 pub fn trauma_sig_hash(goal: i64, mode: u8, pattern_id: i64, ctx: &BeliefCtx) -> [u8; 32] {
-    // Use continuous trigonometric encoding for temporal continuity
+    // Use Utc::now() as authoritative timestamp for epoch bucket
+    trauma_sig_hash_with_ts(goal, mode, pattern_id, ctx, chrono::Utc::now().timestamp_micros())
+}
+
+/// Internal trauma hash with explicit timestamp (for testing)
+pub fn trauma_sig_hash_with_ts(goal: i64, mode: u8, pattern_id: i64, ctx: &BeliefCtx, now_ts_us: i64) -> [u8; 32] {
+    // SECURITY: Use server-side epoch bucket (6-hour windows) for temporal resistance
+    // This prevents hour-by-hour manipulation of local_hour
+    const EPOCH_BUCKET_US: i64 = 6 * 3600 * 1_000_000; // 6 hours in microseconds
+    let epoch_bucket = (now_ts_us / EPOCH_BUCKET_US) as u64;
+    
+    // Use continuous trigonometric encoding for local hour (soft context only)
     // Map 0-23 hour to circle (0 to 2*PI)
     let hour_angle = (ctx.local_hour as f32 / 24.0) * 2.0 * std::f32::consts::PI;
     // Project to unit circle components (scaled by 100 for integer precision)
@@ -332,6 +345,7 @@ pub fn trauma_sig_hash(goal: i64, mode: u8, pattern_id: i64, ctx: &BeliefCtx) ->
     h.update(&goal.to_le_bytes());
     h.update(&mode.to_le_bytes());
     h.update(&pattern_id.to_le_bytes());
+    h.update(&epoch_bucket.to_le_bytes()); // Server-authoritative time bucket
     h.update(&time_sin.to_le_bytes());
     h.update(&time_cos.to_le_bytes());
     h.update(&context_bucket.to_le_bytes());
@@ -355,7 +369,8 @@ impl<'a> Guard for TraumaGuard<'a> {
         const MAX_FUTURE_SKEW_US: i64 = 365 * 24 * 60 * 60 * 1_000_000; // 1 year
 
         // Time sanity: reject zero/negative or far-future timestamps to avoid bypassing inhibit logic.
-        if !self.allow_test_time && now_ts_us <= 0 {
+        // SECURITY: Uses compile-time check, not runtime config, to prevent config-based bypass
+        if !crate::config::SafetyConfig::allow_test_time() && now_ts_us <= 0 {
             return Vote::Deny("trauma_invalid_time");
         }
         let current_ts_us = Utc::now().timestamp_micros();

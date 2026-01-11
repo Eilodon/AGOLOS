@@ -12,7 +12,7 @@ fn master_key() -> [u8; 32] {
 fn append_and_read_roundtrip() {
     let tf = NamedTempFile::new().unwrap();
     let path = tf.path().to_path_buf();
-    let store = EventStore::open(&path, master_key()).unwrap();
+    let mut store = EventStore::open(&path, master_key()).unwrap();
 
     let sid = SessionId::new();
     store.create_session_key(&sid).unwrap();
@@ -33,6 +33,7 @@ fn append_and_read_roundtrip() {
             decision: ControlDecision {
                 target_rate_bpm: 5.0,
                 confidence: 0.95,
+                recommended_poll_interval_ms: 1000,
             },
         },
         meta: serde_json::json!({"src":"sensor"}),
@@ -49,7 +50,7 @@ fn append_and_read_roundtrip() {
 fn tamper_detection() {
     let tf = NamedTempFile::new().unwrap();
     let path = tf.path().to_path_buf();
-    let store = EventStore::open(&path, master_key()).unwrap();
+    let mut store = EventStore::open(&path, master_key()).unwrap();
 
     let sid = SessionId::new();
     store.create_session_key(&sid).unwrap();

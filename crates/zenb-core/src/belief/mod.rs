@@ -97,6 +97,13 @@ pub struct AgentVote {
 
 /// math helpers
 pub fn softmax(mut logits: [f32; 5]) -> [f32; 5] {
+    // NaN/Infinity guard: if any input is non-finite, return uniform distribution
+    // This prevents NaN propagation through the belief engine
+    if logits.iter().any(|x| !x.is_finite()) {
+        log::warn!("softmax: non-finite input detected, returning uniform");
+        return [0.2; 5];
+    }
+    
     // stable softmax
     let max = logits
         .iter()
@@ -107,7 +114,7 @@ pub fn softmax(mut logits: [f32; 5]) -> [f32; 5] {
         *v = (*v - max).exp();
         sum += *v;
     }
-    if sum == 0.0 {
+    if sum == 0.0 || !sum.is_finite() {
         return [0.2; 5];
     }
     for v in logits.iter_mut() {

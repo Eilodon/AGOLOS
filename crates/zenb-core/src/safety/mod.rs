@@ -4,4 +4,4 @@
 
 pub mod monitor;
 
-pub use monitor::{SafetyMonitor, SafetyProperty, SafetyViolation};
+pub use monitor::{RuntimeState, SafetyMonitor, SafetyProperty, SafetyViolation, Severity};

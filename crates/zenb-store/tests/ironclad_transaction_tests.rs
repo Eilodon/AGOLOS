@@ -17,6 +17,7 @@ fn mk_envelope(sid: &SessionId, seq: u64, ts_us: i64) -> Envelope {
             decision: ControlDecision {
                 target_rate_bpm: 6.0,
                 confidence: 0.9,
+                recommended_poll_interval_ms: 1000,
             },
         },
         meta: serde_json::json!({}),
@@ -26,7 +27,7 @@ fn mk_envelope(sid: &SessionId, seq: u64, ts_us: i64) -> Envelope {
 #[test]
 fn test_sequence_validation_in_transaction() {
     let tf = NamedTempFile::new().unwrap();
-    let store = EventStore::open(tf.path(), mk_key()).unwrap();
+    let mut store = EventStore::open(tf.path(), mk_key()).unwrap();
     let sid = SessionId::new();
     store.create_session_key(&sid).unwrap();
 
@@ -55,7 +56,7 @@ fn test_sequence_validation_in_transaction() {
 #[test]
 fn test_batch_continuity_validation() {
     let tf = NamedTempFile::new().unwrap();
-    let store = EventStore::open(tf.path(), mk_key()).unwrap();
+    let mut store = EventStore::open(tf.path(), mk_key()).unwrap();
     let sid = SessionId::new();
     store.create_session_key(&sid).unwrap();
 
@@ -79,7 +80,7 @@ fn test_batch_continuity_validation() {
 #[test]
 fn test_idempotent_insert() {
     let tf = NamedTempFile::new().unwrap();
-    let store = EventStore::open(tf.path(), mk_key()).unwrap();
+    let mut store = EventStore::open(tf.path(), mk_key()).unwrap();
     let sid = SessionId::new();
     store.create_session_key(&sid).unwrap();
 
@@ -103,7 +104,7 @@ fn test_idempotent_insert() {
 #[test]
 fn test_append_log_created() {
     let tf = NamedTempFile::new().unwrap();
-    let store = EventStore::open(tf.path(), mk_key()).unwrap();
+    let mut store = EventStore::open(tf.path(), mk_key()).unwrap();
     let sid = SessionId::new();
     store.create_session_key(&sid).unwrap();
 
@@ -127,7 +128,7 @@ fn test_immediate_transaction_prevents_race() {
     // The IMMEDIATE lock should prevent concurrent modifications
 
     let tf = NamedTempFile::new().unwrap();
-    let store = EventStore::open(tf.path(), mk_key()).unwrap();
+    let mut store = EventStore::open(tf.path(), mk_key()).unwrap();
     let sid = SessionId::new();
     store.create_session_key(&sid).unwrap();
 
@@ -152,7 +153,7 @@ fn test_immediate_transaction_prevents_race() {
 #[test]
 fn test_large_batch_atomicity() {
     let tf = NamedTempFile::new().unwrap();
-    let store = EventStore::open(tf.path(), mk_key()).unwrap();
+    let mut store = EventStore::open(tf.path(), mk_key()).unwrap();
     let sid = SessionId::new();
     store.create_session_key(&sid).unwrap();
 
@@ -172,7 +173,7 @@ fn test_large_batch_atomicity() {
 #[test]
 fn test_enhanced_error_messages() {
     let tf = NamedTempFile::new().unwrap();
-    let store = EventStore::open(tf.path(), mk_key()).unwrap();
+    let mut store = EventStore::open(tf.path(), mk_key()).unwrap();
     let sid = SessionId::new();
     store.create_session_key(&sid).unwrap();
 
@@ -200,7 +201,7 @@ fn test_enhanced_error_messages() {
 #[test]
 fn test_crypto_error_details() {
     let tf = NamedTempFile::new().unwrap();
-    let store = EventStore::open(tf.path(), mk_key()).unwrap();
+    let mut store = EventStore::open(tf.path(), mk_key()).unwrap();
     let sid = SessionId::new();
     // Don't create session key - should fail with detailed error
 
@@ -222,7 +223,7 @@ fn test_crypto_error_details() {
 #[test]
 fn test_empty_batch_handling() {
     let tf = NamedTempFile::new().unwrap();
-    let store = EventStore::open(tf.path(), mk_key()).unwrap();
+    let mut store = EventStore::open(tf.path(), mk_key()).unwrap();
     let sid = SessionId::new();
     store.create_session_key(&sid).unwrap();
 

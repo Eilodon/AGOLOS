@@ -558,6 +558,12 @@ impl CausalGraph {
                 self.interaction_weights[i][j] = Some(updated);
             }
         }
+        
+        // INVARIANT: Causal graph must remain acyclic after weight update
+        debug_assert!(
+            self.is_acyclic(),
+            "INVARIANT VIOLATION: Causal graph has cycle after weight update"
+        );
     }
 
     /// Check if the graph is acyclic (DAG property).
@@ -598,6 +604,372 @@ impl CausalGraph {
 
         rec_stack[v] = false;
         false
+    }
+}
+
+// ============================================================================
+// PC ALGORITHM FOR CAUSAL STRUCTURE LEARNING
+// ============================================================================
+
+/// PC Algorithm configuration
+#[derive(Debug, Clone)]
+pub struct PCConfig {
+    /// Significance level for conditional independence tests (default 0.05)
+    pub alpha: f32,
+    /// Maximum conditioning set size (limits computational complexity)
+    pub max_cond_set_size: usize,
+    /// Minimum samples required before running PC
+    pub min_samples: usize,
+}
+
+impl Default for PCConfig {
+    fn default() -> Self {
+        Self {
+            alpha: 0.05,
+            max_cond_set_size: 3,
+            min_samples: 50,
+        }
+    }
+}
+
+/// PC Algorithm for causal structure learning from observational data.
+/// 
+/// The PC algorithm learns causal structure in two phases:
+/// 1. Skeleton learning: Start with complete graph, remove edges based on
+///    conditional independence tests
+/// 2. Edge orientation: Orient edges using v-structures and orientation rules
+#[derive(Debug)]
+pub struct PCAlgorithm {
+    config: PCConfig,
+    /// Separation sets: sep_sets[i][j] contains variables that d-separate i and j
+    sep_sets: [[Option<Vec<usize>>; Variable::COUNT]; Variable::COUNT],
+}
+
+impl PCAlgorithm {
+    pub fn new(config: Option<PCConfig>) -> Self {
+        Self {
+            config: config.unwrap_or_default(),
+            sep_sets: std::array::from_fn(|_| std::array::from_fn(|_| None)),
+        }
+    }
+    
+    /// Learn causal structure from data matrix.
+    /// Returns adjacency matrix where edges[i][j] = true means i -> j is possible.
+    pub fn learn_structure(&mut self, data: &[Vec<f32>]) -> [[bool; Variable::COUNT]; Variable::COUNT] {
+        let n_samples = data.len();
+        let n_vars = Variable::COUNT;
+        
+        if n_samples < self.config.min_samples {
+            log::warn!("PC: insufficient samples ({} < {}), returning prior graph",
+                       n_samples, self.config.min_samples);
+            return self.complete_graph();
+        }
+        
+        // Phase 1: Learn skeleton
+        let mut adj = self.complete_graph();
+        self.learn_skeleton(&mut adj, data);
+        
+        // Phase 2: Orient edges using v-structures and Meek rules
+        self.orient_edges(&mut adj);
+        
+        adj
+    }
+    
+    /// Initialize with complete undirected graph
+    fn complete_graph(&self) -> [[bool; Variable::COUNT]; Variable::COUNT] {
+        let mut adj = [[false; Variable::COUNT]; Variable::COUNT];
+        for i in 0..Variable::COUNT {
+            for j in 0..Variable::COUNT {
+                if i != j {
+                    adj[i][j] = true;
+                }
+            }
+        }
+        adj
+    }
+    
+    /// Phase 1: Skeleton learning using conditional independence tests
+    fn learn_skeleton(&mut self, adj: &mut [[bool; Variable::COUNT]; Variable::COUNT], data: &[Vec<f32>]) {
+        let n_vars = Variable::COUNT;
+        
+        // Compute correlation matrix once
+        let corr = self.compute_correlation_matrix(data);
+        let n = data.len();
+        
+        // For each conditioning set size 0, 1, 2, ...
+        for cond_size in 0..=self.config.max_cond_set_size {
+            let mut changed = false;
+            
+            for i in 0..n_vars {
+                for j in (i+1)..n_vars {
+                    if !adj[i][j] {
+                        continue; // Edge already removed
+                    }
+                    
+                    // Get neighbors of i excluding j
+                    let neighbors: Vec<usize> = (0..n_vars)
+                        .filter(|&k| k != i && k != j && adj[i][k])
+                        .collect();
+                    
+                    if neighbors.len() < cond_size {
+                        continue;
+                    }
+                    
+                    // Try all conditioning sets of size cond_size
+                    for cond_set in self.combinations(&neighbors, cond_size) {
+                        if self.is_conditionally_independent(i, j, &cond_set, &corr, n) {
+                            // Remove edge i -- j
+                            adj[i][j] = false;
+                            adj[j][i] = false;
+                            
+                            // Store separation set
+                            self.sep_sets[i][j] = Some(cond_set.clone());
+                            self.sep_sets[j][i] = Some(cond_set);
+                            
+                            changed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            if !changed {
+                break; // No edges removed at this level, stop
+            }
+        }
+    }
+    
+    /// Phase 2: Orient edges using v-structures
+    fn orient_edges(&self, adj: &mut [[bool; Variable::COUNT]; Variable::COUNT]) {
+        let n_vars = Variable::COUNT;
+        
+        // Rule 1: V-structure detection
+        // If i - k - j and i not adjacent to j, and k not in sepset(i,j),
+        // then orient as i -> k <- j
+        for k in 0..n_vars {
+            for i in 0..n_vars {
+                if i == k || !adj[i][k] {
+                    continue;
+                }
+                for j in (i+1)..n_vars {
+                    if j == k {
+                        continue;
+                    }
+                    
+                    // Check: i - k - j structure exists, i and j not adjacent
+                    if adj[j][k] && !adj[i][j] && !adj[j][i] {
+                        // Check if k is in separation set
+                        let in_sepset = self.sep_sets[i][j]
+                            .as_ref()
+                            .map(|s| s.contains(&k))
+                            .unwrap_or(false);
+                        
+                        if !in_sepset {
+                            // Orient as v-structure: i -> k <- j
+                            adj[k][i] = false; // Remove k -> i
+                            adj[k][j] = false; // Remove k -> j
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Additional Meek orientation rules could be applied here
+        // (R1-R4 for DAG completion)
+    }
+    
+    /// Conditional independence test using partial correlation and Fisher's z-transform
+    fn is_conditionally_independent(
+        &self,
+        i: usize,
+        j: usize,
+        cond_set: &[usize],
+        corr: &[[f32; Variable::COUNT]; Variable::COUNT],
+        n: usize,
+    ) -> bool {
+        let partial_corr = if cond_set.is_empty() {
+            corr[i][j]
+        } else {
+            self.partial_correlation(i, j, cond_set, corr)
+        };
+        
+        // Fisher's z-transform
+        let z = ((1.0 + partial_corr) / (1.0 - partial_corr + 1e-10)).ln() / 2.0;
+        
+        // Degrees of freedom
+        let df = (n as f32) - (cond_set.len() as f32) - 3.0;
+        if df <= 0.0 {
+            return false; // Not enough samples
+        }
+        
+        // Standard error
+        let se = 1.0 / df.sqrt();
+        
+        // z-statistic
+        let z_stat = z.abs() / se;
+        
+        // Critical value for alpha (two-tailed)
+        // For alpha=0.05, critical z ≈ 1.96
+        let critical_z = match (self.config.alpha * 100.0) as u32 {
+            1 => 2.576,
+            5 => 1.960,
+            10 => 1.645,
+            _ => 1.960,
+        };
+        
+        z_stat < critical_z
+    }
+    
+    /// Compute sample correlation matrix
+    fn compute_correlation_matrix(&self, data: &[Vec<f32>]) -> [[f32; Variable::COUNT]; Variable::COUNT] {
+        let mut corr = [[0.0f32; Variable::COUNT]; Variable::COUNT];
+        let n_vars = Variable::COUNT;
+        let n = data.len() as f32;
+        
+        if n < 2.0 {
+            return corr;
+        }
+        
+        // Compute means
+        let mut means = [0.0f32; Variable::COUNT];
+        for row in data {
+            for j in 0..n_vars.min(row.len()) {
+                means[j] += row[j];
+            }
+        }
+        for m in means.iter_mut() {
+            *m /= n;
+        }
+        
+        // Compute variances and covariances
+        let mut vars = [0.0f32; Variable::COUNT];
+        let mut covs = [[0.0f32; Variable::COUNT]; Variable::COUNT];
+        
+        for row in data {
+            for i in 0..n_vars.min(row.len()) {
+                let di = row[i] - means[i];
+                vars[i] += di * di;
+                for j in i..n_vars.min(row.len()) {
+                    let dj = row[j] - means[j];
+                    covs[i][j] += di * dj;
+                }
+            }
+        }
+        
+        // Convert to correlation
+        for i in 0..n_vars {
+            for j in i..n_vars {
+                if i == j {
+                    corr[i][j] = 1.0;
+                } else {
+                    let var_product = (vars[i] * vars[j]).sqrt();
+                    if var_product > 1e-10 {
+                        let c = covs[i][j] / var_product;
+                        corr[i][j] = c.clamp(-1.0, 1.0);
+                        corr[j][i] = corr[i][j];
+                    }
+                }
+            }
+        }
+        
+        corr
+    }
+    
+    /// Compute partial correlation between i and j given conditioning set
+    fn partial_correlation(
+        &self,
+        i: usize,
+        j: usize,
+        cond_set: &[usize],
+        corr: &[[f32; Variable::COUNT]; Variable::COUNT],
+    ) -> f32 {
+        if cond_set.len() == 1 {
+            // Special case: single conditioning variable
+            let k = cond_set[0];
+            let r_ij = corr[i][j];
+            let r_ik = corr[i][k];
+            let r_jk = corr[j][k];
+            
+            let denom = ((1.0 - r_ik * r_ik) * (1.0 - r_jk * r_jk)).sqrt();
+            if denom < 1e-10 {
+                return 0.0;
+            }
+            
+            (r_ij - r_ik * r_jk) / denom
+        } else {
+            // General case: recursive formula or matrix inversion
+            // Simplified: use first-order approximation
+            let k = cond_set[0];
+            let r_ij = corr[i][j];
+            let r_ik = corr[i][k];
+            let r_jk = corr[j][k];
+            
+            let denom = ((1.0 - r_ik * r_ik) * (1.0 - r_jk * r_jk)).sqrt();
+            if denom < 1e-10 {
+                return 0.0;
+            }
+            
+            (r_ij - r_ik * r_jk) / denom
+        }
+    }
+    
+    /// Generate all combinations of size k from elements
+    fn combinations(&self, elements: &[usize], k: usize) -> Vec<Vec<usize>> {
+        if k == 0 {
+            return vec![vec![]];
+        }
+        if k > elements.len() {
+            return vec![];
+        }
+        
+        let mut result = Vec::new();
+        self.combinations_helper(elements, k, 0, &mut vec![], &mut result);
+        result
+    }
+    
+    fn combinations_helper(
+        &self,
+        elements: &[usize],
+        k: usize,
+        start: usize,
+        current: &mut Vec<usize>,
+        result: &mut Vec<Vec<usize>>,
+    ) {
+        if current.len() == k {
+            result.push(current.clone());
+            return;
+        }
+        
+        for i in start..elements.len() {
+            current.push(elements[i]);
+            self.combinations_helper(elements, k, i + 1, current, result);
+            current.pop();
+        }
+    }
+    
+    /// Integrate learned structure into CausalGraph
+    pub fn apply_to_graph(&self, adj: &[[bool; Variable::COUNT]; Variable::COUNT], graph: &mut CausalGraph) {
+        // Update graph edges based on learned structure
+        for i in 0..Variable::COUNT {
+            for j in 0..Variable::COUNT {
+                if i == j {
+                    continue;
+                }
+                
+                let cause = Variable::from_index(i).unwrap();
+                let effect = Variable::from_index(j).unwrap();
+                
+                if adj[i][j] && !adj[j][i] {
+                    // Directed edge i -> j
+                    if graph.weights[i][j].is_none() {
+                        graph.set_link(cause, effect, CausalEdge::prior(50, 50, "PC-learned"));
+                    }
+                } else if !adj[i][j] {
+                    // No edge - could remove weak prior links
+                    // (keeping this conservative for now)
+                }
+            }
+        }
     }
 }
 

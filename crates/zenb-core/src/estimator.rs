@@ -50,6 +50,17 @@ impl Estimator {
             }
             // If no cached estimate, continue to initialize
         }
+        
+        // Staleness check: if estimate is too old, invalidate cache and force re-estimation
+        // This prevents stale data from propagating when sensors only send bursts
+        const MAX_STALENESS_US: i64 = 5_000_000; // 5 seconds
+        if dt_us > MAX_STALENESS_US {
+            log::warn!("Estimator: data stale ({}ms), resetting EMAs", dt_us / 1000);
+            self.hr_ema = None;
+            self.rr_ema = None;
+            self.rmssd_ema = None;
+            self.last_estimate = None;
+        }
 
         // extract inputs
         let hr = features.get(0).cloned();

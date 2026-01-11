@@ -4,6 +4,7 @@ use chacha20poly1305::aead::{Aead, Payload};
 use blake3::Hasher;
 use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305, XNonce};
 use hkdf::Hkdf;
+use rand::rngs::OsRng;
 use rand::RngCore;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json;
@@ -69,7 +70,9 @@ pub struct SessionKey([u8; 32]);
 impl SessionKey {
     pub fn random() -> Self {
         let mut k = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut k);
+        // SECURITY: Use OsRng for cryptographic key generation
+        // OsRng is guaranteed to be cryptographically secure on all platforms
+        OsRng.fill_bytes(&mut k);
         SessionKey(k)
     }
 }
@@ -397,7 +400,7 @@ impl EventStore {
         // generate session key and wrap with master_key
         let sk = SessionKey::random();
         let mut nonce = [0u8; 24];
-        rand::thread_rng().fill_bytes(&mut nonce);
+        OsRng.fill_bytes(&mut nonce);
         let aead = self.wrapping_aead()?;
         let ciphertext = aead
             .encrypt(XNonce::from_slice(&nonce), &sk.0[..])
@@ -565,7 +568,7 @@ impl EventStore {
                 aad.extend_from_slice(meta_hash.as_bytes());
 
                 let mut nonce = [0u8; 24];
-                rand::thread_rng().fill_bytes(&mut nonce);
+                OsRng.fill_bytes(&mut nonce);
                 let ct = aead
                     .encrypt(
                         XNonce::from_slice(&nonce),

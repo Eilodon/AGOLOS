@@ -45,9 +45,21 @@ pub struct SafetyConfig {
     pub trauma_hard_th: f32,
     pub trauma_soft_th: f32,
     pub trauma_decay_default: f32,
-    /// Allow zero/negative timestamps (test mode only)
+    /// DEPRECATED: This field is ignored at runtime.
+    /// Test time bypass is now compile-time only. See `SafetyConfig::allow_test_time()`.
     #[serde(default)]
+    #[deprecated(since = "0.2.0", note = "Use compile-time cfg(test) instead")]
     pub allow_test_time: bool,
+}
+
+impl SafetyConfig {
+    /// Returns whether test-time bypass is allowed.
+    /// This is a COMPILE-TIME decision, not runtime configurable.
+    /// In release builds, this always returns false regardless of config.
+    #[inline]
+    pub fn allow_test_time() -> bool {
+        cfg!(test)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

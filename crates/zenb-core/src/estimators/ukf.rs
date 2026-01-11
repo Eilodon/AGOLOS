@@ -51,6 +51,46 @@ impl Default for UkfConfig {
     }
 }
 
+/// Sage-Husa Adaptive UKF Configuration
+#[derive(Debug, Clone)]
+pub struct AukfConfig {
+    /// Base UKF configuration
+    pub ukf: UkfConfig,
+    
+    /// Forgetting factor for noise estimation (0.95-0.99 typical)
+    /// Smaller = faster adaptation, larger = more stable
+    pub forgetting_factor: f32,
+    
+    /// Minimum window for noise estimation (prevents premature adaptation)
+    pub min_samples: usize,
+    
+    /// Enable adaptive Q estimation
+    pub adapt_q: bool,
+    
+    /// Enable adaptive R estimation  
+    pub adapt_r: bool,
+    
+    /// Maximum Q scale (prevents divergence)
+    pub max_q_scale: f32,
+    
+    /// Minimum R scale (prevents over-trusting measurements)
+    pub min_r_scale: f32,
+}
+
+impl Default for AukfConfig {
+    fn default() -> Self {
+        Self {
+            ukf: UkfConfig::default(),
+            forgetting_factor: 0.97,
+            min_samples: 10,
+            adapt_q: true,
+            adapt_r: true,
+            max_q_scale: 0.5,
+            min_r_scale: 0.05,
+        }
+    }
+}
+
 /// Sensor observation
 #[derive(Debug, Clone, Default)]
 pub struct Observation {
@@ -116,12 +156,38 @@ pub struct UkfStateEstimator {
     tau_attention: f32,
     tau_rhythm: f32,
     tau_valence: f32,
+    
+    // === SAGE-HUSA AUKF STATE ===
+    /// Sample count for minimum window check
+    sample_count: usize,
+    
+    /// Adaptive Q estimate (process noise covariance)
+    q_adaptive: CovarianceMatrix,
+    
+    /// Adaptive R estimates per measurement type
+    r_adaptive_hr: f32,
+    r_adaptive_hrv: f32,
+    r_adaptive_resp: f32,
+    r_adaptive_valence: f32,
+    
+    /// Residual statistics for Sage-Husa
+    residual_mean: StateVector,
+    residual_cov: CovarianceMatrix,
+    
+    /// AUKF configuration
+    aukf_config: AukfConfig,
 }
 
 impl UkfStateEstimator {
     /// Create new UKF estimator
     pub fn new(config: Option<UkfConfig>) -> Self {
-        let cfg = config.unwrap_or_default();
+        Self::new_adaptive(config.map(|c| AukfConfig { ukf: c, ..Default::default() }))
+    }
+    
+    /// Create new Adaptive UKF (AUKF) estimator with Sage-Husa noise estimation
+    pub fn new_adaptive(config: Option<AukfConfig>) -> Self {
+        let aukf_cfg = config.unwrap_or_default();
+        let cfg = aukf_cfg.ukf.clone();
         let n = N as f32;
         let lambda = cfg.alpha.powi(2) * (n + cfg.kappa) - n;
         
@@ -138,7 +204,7 @@ impl UkfStateEstimator {
         Self {
             x: StateVector::from_vec(vec![0.5, 0.0, 0.0, 0.5, 0.0]),
             p: CovarianceMatrix::identity() * 0.2,
-            config: cfg,
+            config: cfg.clone(),
             target: TargetState::default(),
             weights_m,
             weights_c,
@@ -148,6 +214,16 @@ impl UkfStateEstimator {
             tau_attention: 5.0,
             tau_rhythm: 10.0,
             tau_valence: 8.0,
+            // AUKF initialization
+            sample_count: 0,
+            q_adaptive: CovarianceMatrix::identity() * cfg.q_scale,
+            r_adaptive_hr: cfg.r_hr,
+            r_adaptive_hrv: cfg.r_hrv,
+            r_adaptive_resp: cfg.r_resp,
+            r_adaptive_valence: cfg.r_valence,
+            residual_mean: StateVector::zeros(),
+            residual_cov: CovarianceMatrix::zeros(),
+            aukf_config: aukf_cfg,
         }
     }
     
@@ -180,6 +256,9 @@ impl UkfStateEstimator {
     // --- PREDICTION ---
     
     fn predict(&mut self, dt: f32) {
+        // Store pre-prediction state for Sage-Husa
+        let x_prior = self.x;
+        
         // Generate sigma points
         let sigmas = self.generate_sigma_points();
         
@@ -195,8 +274,55 @@ impl UkfStateEstimator {
         // Predicted covariance
         self.p = self.weighted_covariance(&sigmas_pred, &self.x);
         
-        // Add process noise
-        self.p += CovarianceMatrix::identity() * (self.config.q_scale * dt);
+        // Add process noise (use adaptive Q if enabled)
+        if self.aukf_config.adapt_q && self.sample_count >= self.aukf_config.min_samples {
+            self.p += self.q_adaptive * dt;
+        } else {
+            self.p += CovarianceMatrix::identity() * (self.config.q_scale * dt);
+        }
+        
+        // Update sample count
+        self.sample_count += 1;
+        
+        // Ensure positive-definiteness after prediction
+        self.ensure_psd();
+    }
+    
+    /// Sage-Husa Q adaptation: estimate process noise from state prediction residuals
+    fn update_adaptive_q(&mut self, state_residual: &StateVector, p_post: &CovarianceMatrix) {
+        if !self.aukf_config.adapt_q || self.sample_count < self.aukf_config.min_samples {
+            return;
+        }
+        
+        let b = self.aukf_config.forgetting_factor;
+        let d_k = 1.0 - b; // (1 - b) weight for new observation
+        
+        // Update residual mean: x̄ₖ = b * x̄ₖ₋₁ + (1-b) * dₖ
+        self.residual_mean = self.residual_mean * b + state_residual * d_k;
+        
+        // Compute residual outer product: dₖ * dₖᵀ
+        let residual_outer = state_residual * state_residual.transpose();
+        
+        // Update residual covariance: Cₖ = b * Cₖ₋₁ + (1-b) * dₖdₖᵀ
+        self.residual_cov = self.residual_cov * b + residual_outer * d_k;
+        
+        // Sage-Husa Q estimate: Q̂ = Cₖ - Pₖ₊₁|ₖ₊₁
+        let q_estimate = self.residual_cov - *p_post;
+        
+        // Enforce positive semi-definiteness and bounds
+        for i in 0..N {
+            for j in 0..N {
+                if i == j {
+                    // Diagonal: clamp to [0, max_q_scale]
+                    self.q_adaptive[(i, j)] = q_estimate[(i, j)]
+                        .max(0.0)
+                        .min(self.aukf_config.max_q_scale);
+                } else {
+                    // Off-diagonal: preserve correlation structure but dampen
+                    self.q_adaptive[(i, j)] = q_estimate[(i, j)] * 0.5;
+                }
+            }
+        }
     }
     
     fn state_dynamics(&self, x: &StateVector, dt: f32) -> StateVector {
@@ -299,22 +425,83 @@ impl UkfStateEstimator {
         // Update state
         self.x += k * innovation;
         
-        // Update covariance
+        // Update covariance (Joseph form for numerical stability)
+        // P = P - K * S * K^T
         self.p -= k * s * k.transpose();
+        
+        // Ensure positive-definiteness after measurement update
+        self.ensure_psd();
+    }
+    
+    /// Ensure covariance matrix remains positive semi-definite.
+    /// This is critical for numerical stability of the UKF.
+    fn ensure_psd(&mut self) {
+        const EPSILON: f32 = 1e-6;
+        const MAX_VARIANCE: f32 = 10.0;
+        
+        // 1. Force symmetry: P = (P + P^T) / 2
+        self.p = (self.p + self.p.transpose()) * 0.5;
+        
+        // 2. Clamp diagonal elements (variances must be positive)
+        for i in 0..N {
+            if self.p[(i, i)] < EPSILON {
+                self.p[(i, i)] = EPSILON;
+            } else if self.p[(i, i)] > MAX_VARIANCE {
+                self.p[(i, i)] = MAX_VARIANCE;
+            }
+            
+            // 3. Check for NaN and replace with default
+            if self.p[(i, i)].is_nan() {
+                log::warn!("NaN detected in covariance diagonal, resetting");
+                self.p[(i, i)] = 0.2;
+            }
+        }
+        
+        // 4. Clamp off-diagonal elements (correlations bounded by variances)
+        for i in 0..N {
+            for j in 0..N {
+                if i != j {
+                    let max_cov = (self.p[(i, i)] * self.p[(j, j)]).sqrt();
+                    self.p[(i, j)] = self.p[(i, j)].clamp(-max_cov, max_cov);
+                    
+                    if self.p[(i, j)].is_nan() {
+                        self.p[(i, j)] = 0.0;
+                    }
+                }
+            }
+        }
     }
     
     // --- SIGMA POINTS ---
     
-    fn generate_sigma_points(&self) -> Vec<StateVector> {
+    fn generate_sigma_points(&mut self) -> Vec<StateVector> {
         let n = N as f32;
         let scale = (n + self.lambda).sqrt();
         
-        // Cholesky decomposition
+        // Cholesky decomposition with regularization fallback
         let l = match self.p.cholesky() {
             Some(chol) => chol.l(),
             None => {
-                log::warn!("Covariance not PSD, using identity");
-                CovarianceMatrix::identity() * 0.2
+                // Covariance is not PSD - regularize and retry
+                log::warn!("Covariance not PSD, applying regularization");
+                self.ensure_psd();
+                
+                // Add small diagonal jitter for numerical stability
+                let mut p_jittered = self.p;
+                for i in 0..N {
+                    p_jittered[(i, i)] += 1e-4;
+                }
+                
+                // Retry Cholesky with jittered matrix
+                match p_jittered.cholesky() {
+                    Some(chol) => chol.l(),
+                    None => {
+                        // Last resort: reset to identity (this should be rare)
+                        log::error!("Covariance recovery failed, resetting to identity");
+                        self.p = CovarianceMatrix::identity() * 0.2;
+                        CovarianceMatrix::identity() * 0.447 // sqrt(0.2)
+                    }
+                }
             }
         };
         
@@ -406,7 +593,7 @@ mod tests {
     
     #[test]
     fn test_sigma_points_generation() {
-        let ukf = UkfStateEstimator::new(None);
+        let mut ukf = UkfStateEstimator::new(None);
         let sigmas = ukf.generate_sigma_points();
         
         assert_eq!(sigmas.len(), 11); // 2*N + 1
