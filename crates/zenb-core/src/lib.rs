@@ -16,11 +16,13 @@ pub mod domain;
 pub mod engine;
 pub mod estimator;
 pub mod estimators;  // NEW: UKF and advanced estimators
+pub mod memory;      // VAJRA-001: Holographic Memory
+pub mod perception;  // VAJRA-001: Sheaf Perception
 pub mod phase_machine;
 pub mod policy;
 pub mod replay;
 pub mod resonance;
-pub mod safety;      // NEW: LTL Safety Monitor
+pub mod safety;      // NEW: LTL Safety Monitor + DharmaFilter
 pub mod safety_swarm;
 pub mod sensory;     // NEW: Binaural, Soundscape, Haptics
 pub mod trauma_cache;
@@ -113,3 +115,12 @@ pub use causal::{
     ActionPolicy, ActionType, CausalBuffer, CausalGraph, ObservationSnapshot, PredictedState,
     Variable,
 };
+
+// VAJRA-001: Holographic Memory
+pub use memory::HolographicMemory;
+
+// VAJRA-001: Sheaf Perception  
+pub use perception::SheafPerception;
+
+// VAJRA-001: Dharma Filter (exported from safety module)
+pub use safety::{AlignmentCategory, ComplexDecision, DharmaFilter};

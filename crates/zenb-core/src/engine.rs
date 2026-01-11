@@ -7,11 +7,22 @@ use crate::estimator::Estimator;
 use crate::estimator::Estimate;
 use crate::estimators::{UkfStateEstimator, Observation as UkfObservation};
 use crate::resonance::ResonanceTracker;
-use crate::safety::{SafetyMonitor, RuntimeState};
+use crate::safety::{SafetyMonitor, RuntimeState, DharmaFilter};
 use crate::safety_swarm::TraumaRegistry;
 use crate::trauma_cache::TraumaCache;
 
+// VAJRA-001: New cognitive architecture imports
+use crate::memory::HolographicMemory;
+use crate::perception::SheafPerception;
+use nalgebra::DVector;
+
 /// High-level engine that holds estimator, safety envelope, controller and breath engine.
+/// 
+/// # VAJRA-001 Upgrade
+/// This engine now includes three new cognitive capabilities:
+/// - `HolographicMemory`: FFT-based associative memory (Tưởng Uẩn)
+/// - `SheafPerception`: Laplacian-based sensor consensus (Sắc Uẩn)
+/// - `DharmaFilter`: Phase-based ethical action filtering (Hành Uẩn)
 pub struct Engine {
 
     pub controller: AdaptiveController,
@@ -32,6 +43,7 @@ pub struct Engine {
     pub last_pattern_id: i64,
     pub last_goal: i64,
     pub causal_graph: CausalGraph,
+    /// @deprecated Use `holographic_memory` instead. Kept for backward compatibility.
     pub causal_buffer: CausalBuffer,
     pub last_observation: Option<crate::domain::Observation>,
     pub trauma_registry: TraumaRegistry,
@@ -65,6 +77,24 @@ pub struct Engine {
     pub pc_change_detector: crate::causal::GraphChangeDetector,
     pub pc_learning_enabled: bool,
     pub last_pc_run_ts: i64,
+    
+    // === VAJRA-001: Holographic Cognitive Architecture ===
+    
+    /// Holographic Memory (Tưởng Uẩn) - FFT-based associative memory
+    /// Replaces causal_buffer for new code paths
+    pub holographic_memory: HolographicMemory,
+    
+    /// Sheaf Perception (Sắc Uẩn) - Laplacian sensor consensus
+    pub sheaf_perception: SheafPerception,
+    
+    /// Dharma Filter (Hành Uẩn) - Phase-based ethical action filtering
+    pub dharma_filter: DharmaFilter,
+    
+    /// Feature flag to enable Vajra-001 architecture
+    pub use_vajra_architecture: bool,
+    
+    /// Last sheaf energy (for diagnostics)
+    pub last_sheaf_energy: f32,
 }
 
 impl Engine {
@@ -146,6 +176,13 @@ impl Engine {
             pc_change_detector: crate::causal::GraphChangeDetector::default(),
             pc_learning_enabled: cfg.sota.pc_learning_enabled,
             last_pc_run_ts: 0,
+            
+            // VAJRA-001: Holographic Cognitive Architecture
+            holographic_memory: HolographicMemory::default_for_zenb(),
+            sheaf_perception: SheafPerception::default_for_zenb(),
+            dharma_filter: DharmaFilter::default_for_zenb(),
+            use_vajra_architecture: false, // Default off for safe rollout
+            last_sheaf_energy: 0.0,
         }
     }
 
@@ -174,7 +211,43 @@ impl Engine {
     /// Expected features layout (client must follow this order):
     /// [hr_bpm, rmssd, rr_bpm, quality, motion]
     /// - `quality` and `motion` are optional and will default to 1.0 and 0.0 respectively if omitted.
+    ///
+    /// # VAJRA-001 Enhancement
+    /// When `use_vajra_architecture` is enabled, sensor data passes through
+    /// SheafPerception for consensus filtering before further processing.
     pub fn ingest_sensor(&mut self, features: &[f32], ts_us: i64) -> Estimate {
+        // VAJRA-001: Sheaf Perception - filter inconsistent sensors
+        let processed_features: Vec<f32> = if self.use_vajra_architecture && features.len() >= 3 {
+            // Pad to 5 sensors if needed
+            let mut padded = vec![0.0f32; 5];
+            for (i, &f) in features.iter().take(5).enumerate() {
+                padded[i] = f;
+            }
+            // Default quality and motion if not provided
+            if features.len() < 4 { padded[3] = 1.0; } // quality
+            if features.len() < 5 { padded[4] = 0.0; } // motion
+            
+            let sensor_vec = DVector::from_vec(padded);
+            let (diffused, is_anomalous, energy) = self.sheaf_perception.process(&sensor_vec);
+            
+            // Store energy for diagnostics
+            self.last_sheaf_energy = energy;
+            
+            if is_anomalous {
+                log::warn!(
+                    "SheafPerception: Anomalous sensor data detected (energy={:.3})",
+                    energy
+                );
+            }
+            
+            // Use diffused values
+            diffused.iter().cloned().collect()
+        } else {
+            features.to_vec()
+        };
+        
+        let features = &processed_features;
+        
         // Legacy ingest for backward compatibility / fallback
         // We always run this to maintain estimator state even if UKF is primary
         let est_legacy = self.legacy_estimator.ingest(features, ts_us);
@@ -253,6 +326,10 @@ impl Engine {
     }
 
     /// Advance engine time and compute any cycles (returns cycle count)
+    ///
+    /// # VAJRA-001 Enhancement
+    /// When `use_vajra_architecture` is enabled, observations are encoded into
+    /// HolographicMemory for FFT-based associative recall.
     pub fn tick(&mut self, dt_us: u64) -> u64 {
         let (_trans, cycles) = self.breath.tick(dt_us);
 
@@ -287,6 +364,35 @@ impl Engine {
                 }),
             };
             self.causal_buffer.push(snapshot);
+            
+            // VAJRA-001: Encode into Holographic Memory
+            if self.use_vajra_architecture {
+                // Create context key from belief state
+                let key = crate::memory::hologram::encode_context_key(
+                    &self.belief_state.p[..],
+                    self.holographic_memory.dim(),
+                );
+                
+                // Create value from observation features
+                let bio = obs.bio_metrics.as_ref();
+                let obs_features = vec![
+                    bio.and_then(|b| b.hr_bpm).unwrap_or(0.0) / 200.0, // Normalize
+                    bio.and_then(|b| b.hrv_rmssd).unwrap_or(0.0) / 100.0,
+                    bio.and_then(|b| b.respiratory_rate).unwrap_or(0.0) / 20.0,
+                    self.belief_state.conf,
+                    self.last_resonance_score,
+                ];
+                let value = crate::memory::hologram::encode_state_value(
+                    &obs_features,
+                    self.holographic_memory.dim(),
+                );
+                
+                // Entangle (store) the association
+                self.holographic_memory.entangle(&key, &value);
+                
+                // Apply decay (forgetting) - 0.999 = very slow decay
+                self.holographic_memory.decay(0.999);
+            }
         }
 
         cycles
@@ -543,6 +649,40 @@ impl Engine {
         }
 
 
+        // VAJRA-001: Dharma Filter - phase-based ethical action filtering
+        if self.use_vajra_architecture {
+            use crate::safety::ComplexDecision;
+            
+            // Convert proposed BPM to complex decision
+            let baseline_bpm = 6.0;
+            let action = ComplexDecision::from_bpm_target(proposed, baseline_bpm);
+            
+            // Apply Dharma filter
+            match action.filter_with(&self.dharma_filter) {
+                Some(sanctioned) => {
+                    let new_proposed = sanctioned.to_bpm(baseline_bpm);
+                    if (new_proposed - proposed).abs() > 0.1 {
+                        log::info!(
+                            "DharmaFilter: Scaled action from {:.2} to {:.2} BPM (alignment={:.3})",
+                            proposed,
+                            new_proposed,
+                            self.dharma_filter.check_alignment(action.vector)
+                        );
+                    }
+                    proposed = new_proposed.clamp(4.0, 12.0);
+                }
+                None => {
+                    // Dharma veto - fall back to baseline
+                    log::warn!(
+                        "DharmaFilter: Action VETOED (proposed={:.2} BPM, phase={:.3} rad)",
+                        proposed,
+                        action.phase()
+                    );
+                    proposed = baseline_bpm;
+                }
+            }
+        }
+
         let mut patch = crate::safety_swarm::PatternPatch {
             target_bpm: proposed,
             hold_sec: 30.0,
@@ -774,63 +914,10 @@ mod tests {
         });
         let est = eng.ingest_sensor(&[60.0, 40.0, 6.0], 0);
         // PR3: make_control no longer takes Option<TraumaSource> - intrinsic safety
-        let (dec, persist, policy, deny) = eng.make_control(&est, 0);
+        let (dec, _persist, policy, deny) = eng.make_control(&est, 0);
         assert!(dec.confidence >= 0.0);
         assert!(policy.is_some());
         assert!(deny.is_none());
     }
-    
-    /// Ingest observation for causal learning pipeline
-    pub fn ingest_observation(&mut self, obs: crate::domain::Observation, ts_us: i64) {
-        let snapshot = ObservationSnapshot::from(obs);
-        
-        // Feed to causal buffer (existing)
-        self.causal_buffer.push(snapshot.clone());
-        
-        // NEW: Accumulate for PC learning
-        if self.pc_learning_enabled {
-            self.observation_buffer.push(snapshot);
-            
-            // Check if should trigger PC learning
-            if self.pc_change_detector.should_trigger_learning(&self.observation_buffer) {
-                // Rate limit: Max 1x per 60s for now
-                let time_since_last = ts_us - self.last_pc_run_ts;
-                if time_since_last > 60_000_000 {
-                    self.run_pc_learning(ts_us);
-                }
-            }
-        }
-    }
-    
-    /// Run PC Algorithm to learn causal structure
-    fn run_pc_learning(&mut self, ts_us: i64) {
-        use crate::causal::{PCAlgorithm, PCConfig};
-        
-        log::info!("Running PC Algorithm on {} samples...", self.observation_buffer.len());
-        
-        let pc_config = PCConfig {
-            alpha: 0.05,
-            max_cond_set_size: 3,
-            min_samples: self.pc_change_detector.min_samples,
-        };
-        
-        let mut pc = PCAlgorithm::new(pc_config);
-        
-        // PC algorithm can be slow - should be off-thread in production
-        if let Ok(learned_graph) = pc.learn_from_data(&self.observation_buffer) {
-            self.causal_graph.merge_learned_edges(&learned_graph);
-            log::info!("PC learning completed: {} edges learned.", learned_graph.edge_count());
-        } else {
-            log::warn!("PC learning failed or produced invalid graph.");
-        }
-        
-        // Reset buffer (retain last 10% for continuity)
-        let retain = self.observation_buffer.len() / 10;
-        if retain < self.observation_buffer.len() {
-            let drain_cnt = self.observation_buffer.len() - retain;
-            self.observation_buffer.drain(0..drain_cnt);
-        }
-        
-        self.last_pc_run_ts = ts_us;
-    }
 }
+

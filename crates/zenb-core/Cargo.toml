@@ -16,5 +16,11 @@ lru = "0.12"
 nalgebra = "0.32"  # Linear algebra for UKF
 log = "0.4"        # Logging
 
+# Vajra-001: Holographic Memory dependencies
+rustfft = "6.2"       # FFT processing for holographic memory
+num-complex = "0.4"   # Complex number arithmetic
+rand = "0.8"          # Random vector generation
+
 [dev-dependencies]
 tempfile = "3.10"
+criterion = "0.5"     # Benchmarking for performance tests
