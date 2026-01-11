@@ -11,6 +11,7 @@ pub mod belief;
 pub mod breath_engine;
 pub mod causal;
 pub mod config;
+pub mod control_flow;  // NEW: Type-safe pipeline builder
 pub mod controller;
 pub mod domain;
 pub mod engine;
@@ -26,6 +27,7 @@ pub mod safety;      // NEW: LTL Safety Monitor + DharmaFilter
 pub mod safety_swarm;
 pub mod sensory;     // NEW: Binaural, Soundscape, Haptics
 pub mod trauma_cache;
+pub mod uncertain;   // NEW: Uncertainty quantification
 pub mod validation;
 
 #[cfg(test)]
@@ -115,6 +117,18 @@ pub use causal::{
     ActionPolicy, ActionType, CausalBuffer, CausalGraph, ObservationSnapshot, PredictedState,
     Variable,
 };
+
+// Causal interventions (Pearl's do-calculus)
+pub use causal::intervenable::{Intervenable, InterventionLog};
+
+// Monadic causal effects
+pub use causal::propagating_effect::PropagatingEffect;
+
+// Uncertainty quantification
+pub use uncertain::{MaybeUncertain, Uncertain};
+
+// Type-safe pipeline
+pub use control_flow::{ControlFlowBuilder, ControlFlowGraph, ZenBProtocol};
 
 // VAJRA-001: Holographic Memory
 pub use memory::HolographicMemory;

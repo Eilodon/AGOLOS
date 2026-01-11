@@ -4,6 +4,10 @@ use crate::domain::{CausalBeliefState, Observation};
 // Submodules
 pub mod notears;
 mod graph_change_detector;
+pub mod intervenable;  // NEW: Pearl's do-calculus interventions
+pub mod propagating_effect; // NEW: Monadic causal effects
+pub mod hypergraph;    // NEW: Higher-order causal relationships
+
 pub use graph_change_detector::GraphChangeDetector;
 pub use notears::{Notears, NotearsConfig};
 
@@ -407,25 +411,35 @@ impl CausalGraph {
     /// * `action` - The proposed action policy
     ///
     /// # Returns
-    /// Success probability in [0.0, 1.0]. Returns 0.5 (neutral) if graph is empty (cold start).
+    /// Uncertain<f32> with:
+    /// - value: Success probability in [0.0, 1.0]
+    /// - confidence: Based on number of learned edges and observations
+    /// - source: "CausalGraph"
     ///
-    /// # Logic
-    /// - Computes weighted sum of context variables -> UserAction edge weights
-    /// - Normalizes to [0, 1] probability range
-    /// - Returns 0.5 for cold start (no learned relationships)
-    pub fn predict_success_probability(&self, context_state: &[f32], _action: &ActionPolicy) -> f32 {
-        // Cold start: return neutral probability to allow exploration
+    /// Returns 0.5 with low confidence for cold start (no learned relationships).
+    pub fn predict_success_probability(
+        &self,
+        context_state: &[f32],
+        _action: &ActionPolicy,
+    ) -> crate::uncertain::Uncertain<f32> {
+        // Cold start: return neutral probability with low confidence
         let has_learned_weights = Variable::all()
             .iter()
             .any(|&var| self.weights[var.index()][Variable::UserAction.index()].is_some());
 
         if !has_learned_weights {
-            return 0.5;
+            return crate::uncertain::Uncertain::new(
+                0.5,
+                0.1, // Low confidence - no data
+                "CausalGraph (cold start)",
+            );
         }
 
         // Compute weighted sum of context influences on action success
         let mut weighted_sum = 0.0;
         let mut total_weight = 0.0;
+        let mut edge_count = 0;
+        let mut total_observations = 0u64;
 
         for var in Variable::all() {
             let var_idx = var.index();
@@ -440,6 +454,8 @@ impl CausalGraph {
                 if weight.abs() > 1e-6 {
                     weighted_sum += context_state[var_idx] * weight;
                     total_weight += weight.abs();
+                    edge_count += 1;
+                    total_observations += (link.successes + link.failures) as u64;
                 }
             } else {
                 // No link yet -> neutral contribution (exploration)
@@ -449,15 +465,21 @@ impl CausalGraph {
 
         // Add pairwise interaction contributions (upper triangular only)
         for i in 0..Variable::COUNT {
-            if i >= context_state.len() { break; }
+            if i >= context_state.len() {
+                break;
+            }
             for j in (i + 1)..Variable::COUNT {
-                if j >= context_state.len() { break; }
+                if j >= context_state.len() {
+                    break;
+                }
                 if let Some(link) = &self.interaction_weights[i][j] {
                     let w = link.success_prob();
                     if w.abs() > 1e-6 {
                         let interaction = context_state[i] * context_state[j];
                         weighted_sum += interaction * w;
                         total_weight += w.abs();
+                        edge_count += 1;
+                        total_observations += (link.successes + link.failures) as u64;
                     }
                 }
             }
@@ -465,13 +487,22 @@ impl CausalGraph {
 
         // Normalize to [0, 1] probability
         // If total_weight is 0, return neutral probability
-        if total_weight < 1e-6 {
-            return 0.5;
-        }
+        let value = if total_weight < 1e-6 {
+            0.5
+        } else {
+            // Map weighted_sum to probability: [-1, 1] -> [0, 1]
+            let normalized = weighted_sum / total_weight;
+            ((normalized + 1.0) / 2.0).clamp(0.0, 1.0)
+        };
 
-        // Map weighted_sum to probability: [-1, 1] -> [0, 1]
-        let normalized = weighted_sum / total_weight;
-        ((normalized + 1.0) / 2.0).clamp(0.0, 1.0)
+        // Compute confidence based on:
+        // 1. Number of learned edges (more edges = more confident)
+        // 2. Total observations (more data = more confident)
+        let edge_confidence = (edge_count as f32 / Variable::COUNT as f32).min(1.0);
+        let data_confidence = (total_observations as f32 / 100.0).min(1.0); // Saturate at 100 observations
+        let confidence = (edge_confidence * 0.5 + data_confidence * 0.5).clamp(0.1, 0.95);
+
+        crate::uncertain::Uncertain::new(value, confidence, "CausalGraph")
     }
 
     /// Update causal graph weights based on observed outcome.
@@ -612,6 +643,48 @@ impl CausalGraph {
 
         rec_stack[v] = false;
         false
+    }
+    
+    /// Predict counterfactual outcome using interventions
+    ///
+    /// This method uses the PropagatingEffect monad to perform "what-if" analysis:
+    /// "What would happen if we intervened to set variable X to value Y?"
+    ///
+    /// # Arguments
+    /// * `state` - Current belief state
+    /// * `intervention` - (Variable, value) to intervene on
+    /// * `action` - Proposed action to evaluate
+    ///
+    /// # Returns
+    /// PropagatingEffect containing the predicted state after intervention
+    ///
+    /// # Example
+    /// ```ignore
+    /// // "What if we forced HR to calm level (0.2)?"
+    /// let counterfactual = graph.predict_counterfactual(
+    ///     &current_state,
+    ///     (Variable::HeartRate, 0.2),
+    ///     &proposed_action
+    /// );
+    /// ```
+    pub fn predict_counterfactual(
+        &self,
+        state: &crate::belief::BeliefState,
+        intervention: (Variable, f32),
+        action: &ActionPolicy,
+    ) -> crate::causal::propagating_effect::PropagatingEffect<PredictedState> {
+        use crate::causal::propagating_effect::PropagatingEffect;
+        use crate::causal::intervenable::Intervenable;
+        
+        PropagatingEffect::pure(state.clone())
+            .log(format!("Initial state: {:?}", state.mode))
+            .intervene(intervention.0, intervention.1)
+            .log(format!("Intervened: {:?} = {}", intervention.0, intervention.1))
+            .map(|intervened_state| {
+                // Predict outcome with intervened state
+                self.predict_outcome(&intervened_state, action)
+            })
+            .log("Counterfactual outcome predicted")
     }
 }
 

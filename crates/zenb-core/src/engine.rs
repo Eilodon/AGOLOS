@@ -819,15 +819,15 @@ impl Engine {
             }
             Ok((applied, bits)) => {
                 // Safety guards passed - now apply causal veto
-                if success_prob < MIN_SUCCESS_PROB {
+                if success_prob.value < MIN_SUCCESS_PROB {
                     // CAUSAL VETO: Action historically fails in this context
                     eprintln!(
-                        "DEBUG: Action Vetoed by Causal Graph (Prob: {:.3})",
-                        success_prob
+                        "DEBUG: Action Vetoed by Causal Graph (Prob: {:.3}, Conf: {:.3})",
+                        success_prob.value, success_prob.confidence
                     );
                     eprintln!(
-                        "ENGINE_DENY: causal_veto_low_prob prob={:.3} mode={:?} conf={:.3}",
-                        success_prob, self.belief_state.mode, self.belief_state.conf
+                        "ENGINE_DENY: causal_veto_low_prob prob={:.3} conf={:.3} mode={:?}",
+                        success_prob.value, success_prob.confidence, self.belief_state.mode
                     );
 
                     // Fallback to safe default: maintain last decision or use gentle baseline
@@ -848,7 +848,7 @@ impl Engine {
                         },
                         false,
                         Some((self.belief_state.mode as u8, 0, self.belief_state.conf)),
-                        Some(format!("causal_veto_low_prob_{:.2}", success_prob)),
+                        Some(format!("causal_veto_low_prob_{:.2}", success_prob.value)),
                     );
                 }
 
@@ -871,7 +871,7 @@ impl Engine {
                 }
 
                 // Causal boost: high-success actions get confidence boost
-                let confidence_boost = if success_prob > HIGH_SUCCESS_PROB {
+                let confidence_boost = if success_prob.value > HIGH_SUCCESS_PROB {
                     1.2 // 20% confidence boost for historically successful actions
                 } else {
                     1.0
